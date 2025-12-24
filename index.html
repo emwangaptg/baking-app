@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>烘焙大師 Pro - V119 訂單擺攤修復版</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+
+    <script src="https://unpkg.com/lucide@0.294.0/dist/umd/lucide.min.js"></script>
+    
+    <style>
+        body { font-family: "Microsoft JhengHei", "Heiti TC", sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .sidebar-transition { transition: transform 0.3s ease-in-out; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+
+        // --- Icon ---
+        const Icon = ({ name, size = 24, className = "", ...props }) => {
+            if (!window.lucide || !window.lucide.icons) return <span style={{width:size, height:size}} className="inline-block bg-gray-200 rounded"></span>;
+            const kebabName = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+            const iconData = window.lucide.icons[kebabName] || window.lucide.icons[name.toLowerCase()];
+            if (!iconData) return null;
+            return (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`lucide lucide-${name} ${className}`} {...props}>
+                    {iconData.map((child, index) => React.createElement(child[0], { key: index, ...child[1] }))}
+                </svg>
+            );
+        };
+        const LucideProxy = new Proxy({}, { get: (target, prop) => (props) => <Icon name={prop} {...props} /> });
+        const { ChefHat, ShoppingBag, PieChart, Package, Utensils, Zap, Plus, Trash2, Save, Image: ImageIcon, ArrowLeft, Search, DollarSign, MapPin, Calculator, Calendar, AlertTriangle, LayoutDashboard, Edit3, X, RefreshCw, ClipboardList, CheckCircle, FileText, Upload, Truck, Store, AlertCircle, Tent, Coins, Filter, Clock, Flame, Percent, Link, Box, TrendingUp, TrendingDown, Activity, BarChart2, Settings, Download, UploadCloud, Cloud, CloudOff, Database, Globe, HelpCircle, Menu, Tag, Gift, EyeOff, PlusCircle, Trash, Info, RefreshCcw, Unplug, Leaf, Wrench, Users, Heart } = LucideProxy;
+
+        // --- Utils ---
+        const loadScript = (src) => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) return resolve(); const script = document.createElement('script'); script.src = src; script.onload = resolve; script.onerror = reject; document.head.appendChild(script); });
+        const generateUniqueId = () => `id_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        const CHART_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#3b82f6', '#14b8a6'];
+        const NUTRIENTS = [{ key: 'calories', label: '熱量', unit: 'kcal' }, { key: 'protein', label: '蛋白質', unit: 'g' }, { key: 'fat', label: '脂肪', unit: 'g' }, { key: 'saturatedFat', label: '飽和脂肪', unit: 'g' }, { key: 'transFat', label: '反式脂肪', unit: 'g' }, { key: 'carbs', label: '碳水化合物', unit: 'g' }, { key: 'sugar', label: '糖', unit: 'g' }, { key: 'sodium', label: '鈉', unit: 'mg' }];
+
+        // --- Hook ---
+        const useStickyState = (defaultValue, key) => {
+            const [value, setValue] = useState(() => {
+                try {
+                    const stickyValue = window.localStorage.getItem(key);
+                    return stickyValue !== null ? JSON.parse(stickyValue) : defaultValue;
+                } catch (e) { return defaultValue; }
+            });
+            useEffect(() => {
+                window.localStorage.setItem(key, JSON.stringify(value));
+            }, [key, value]);
+            return [value, setValue];
+        };
+
+        // --- UI Components ---
+        const Card = ({ children, className = "", onClick }) => <div onClick={onClick} className={`bg-white rounded-xl shadow-sm border border-gray-100 ${className} ${onClick ? 'cursor-pointer hover:shadow-md transition-shadow' : ''}`}>{children}</div>;
+        const Badge = ({ children, color = "gray" }) => {
+            const colors = { gray: "bg-gray-100 text-gray-800", red: "bg-red-100 text-red-800", green: "bg-green-100 text-green-800", yellow: "bg-yellow-100 text-yellow-800", blue: "bg-blue-100 text-blue-800", indigo: "bg-indigo-100 text-indigo-800" };
+            return <span className={`px-2 py-1 rounded-md text-xs font-medium ${colors[color]}`}>{children}</span>;
+        };
+        const Modal = ({ title, children, onClose }) => (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fade-in">
+                <div className="bg-white rounded-xl w-full max-w-7xl max-h-[95vh] flex flex-col shadow-2xl transform transition-all">
+                    <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl shrink-0">
+                        <h3 className="font-bold text-lg text-gray-800">{title}</h3>
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-full hover:bg-gray-200 transition-colors"><X size={24} /></button>
+                    </div>
+                    <div className="p-6 overflow-y-auto custom-scrollbar flex-1">{children}</div>
+                </div>
+            </div>
+        );
+        
+        const SafeNumberInput = ({ value, onChange, className, placeholder, ...props }) => {
+            const [localValue, setLocalValue] = useState(value);
+            useEffect(() => { setLocalValue(value); }, [value]);
+            const handleChange = (e) => {
+                const val = e.target.value;
+                setLocalValue(val);
+                if (val === '' || !isNaN(val) || val === '-' || val.endsWith('.')) {
+                    onChange(val);
+                }
+            };
+            return <input type="text" inputMode="decimal" className={className} value={localValue} onChange={handleChange} placeholder={placeholder} {...props} />;
+        };
+
+        const SimplePieChart = ({ data }) => {
+            if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-gray-400">無數據</div>;
+            const total = data.reduce((acc, cur) => acc + cur.value, 0); 
+            if (total === 0) return <div className="h-full flex items-center justify-center text-gray-400">尚無營收</div>;
+            let startAngle = 0;
+            return (<div className="relative w-48 h-48 mx-auto"><svg viewBox="0 0 100 100" className="w-full h-full transform -rotate-90">{data.map((slice, i) => { const angle = (slice.value / total) * 360; if (angle === 360) return <circle key={i} cx="50" cy="50" r="50" fill={slice.color} />; const x1 = 50 + 50 * Math.cos(Math.PI * startAngle / 180), y1 = 50 + 50 * Math.sin(Math.PI * startAngle / 180), x2 = 50 + 50 * Math.cos(Math.PI * (startAngle + angle) / 180), y2 = 50 + 50 * Math.sin(Math.PI * (startAngle + angle) / 180), largeArc = angle > 180 ? 1 : 0; const pathData = `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArc} 1 ${x2} ${y2} Z`; startAngle += angle; return <path key={i} d={pathData} fill={slice.color} stroke="white" strokeWidth="1" />; })}</svg></div>);
+        };
+
+        // --- DataManager ---
+        const DataManager = ({ firebaseStatus, onConnectFirebase, onDisconnectFirebase, recipes, ingredients, packaging, setRecipes }) => {
+            const fileInputRef = useRef(null);
+            const [configInput, setConfigInput] = useState('');
+            const [isWiping, setIsWiping] = useState(false);
+            const [isRelinking, setIsRelinking] = useState(false);
+
+            const handleExport = () => { const data = { recipes: JSON.parse(localStorage.getItem('baking_recipes_v3') || '[]'), ingredients: JSON.parse(localStorage.getItem('baking_ingredients_v3') || '[]'), packaging: JSON.parse(localStorage.getItem('baking_packaging_v3') || '[]'), orders: JSON.parse(localStorage.getItem('baking_orders_v3') || '[]'), stalls: JSON.parse(localStorage.getItem('baking_stalls_v3') || '[]'), timestamp: new Date().toISOString() }; const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `baking_backup_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); };
+            const handleImport = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { try { const data = JSON.parse(evt.target.result); if (confirm(`即將匯入 ${data.timestamp} 的備份檔案。\n這將覆蓋目前的資料，確定嗎？`)) { if(data.recipes) localStorage.setItem('baking_recipes_v3', JSON.stringify(data.recipes)); if(data.ingredients) localStorage.setItem('baking_ingredients_v3', JSON.stringify(data.ingredients)); if(data.packaging) localStorage.setItem('baking_packaging_v3', JSON.stringify(data.packaging)); if(data.orders) localStorage.setItem('baking_orders_v3', JSON.stringify(data.orders)); if(data.stalls) localStorage.setItem('baking_stalls_v3', JSON.stringify(data.stalls)); alert("資料匯入成功！頁面將重新整理。"); window.location.reload(); } } catch (err) { alert("匯入失敗：檔案格式錯誤"); console.error(err); } }; reader.readAsText(file); e.target.value = ''; };
+            
+            const handleRelinkAll = async () => {
+                if(!confirm("確定要進行「智能連結修復」嗎？\n系統將會嘗試用「名稱」將所有食譜中的食材與包材重新配對到資料庫。")) return;
+                setIsRelinking(true);
+                let repairedCount = 0;
+                const newRecipes = (recipes||[]).map(recipe => { 
+                    let changed = false;
+                    const newItems = (recipe.items || []).map(item => {
+                        let target = (ingredients||[]).find(i => i.id === item.id);
+                        if (!target && item.name) {
+                            target = (ingredients||[]).find(i => i.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+                            if (target) { item.id = target.id; changed = true; repairedCount++; }
+                        }
+                        if(target) item.name = target.name;
+                        return item;
+                    });
+                    const newPkgItems = (recipe.packagingItems || []).map(item => {
+                        let target = (packaging||[]).find(p => p.id === item.id);
+                        if (!target && item.name) {
+                            target = (packaging||[]).find(p => p.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+                            if (target) { item.id = target.id; changed = true; repairedCount++; }
+                        }
+                        if(target) item.name = target.name;
+                        return item;
+                    });
+                    if (changed) return { ...recipe, items: newItems, packagingItems: newPkgItems };
+                    return recipe;
+                });
+                setRecipes(newRecipes);
+                if (firebaseStatus === 'connected') {
+                    const db = firebase.firestore();
+                    const batch = db.batch();
+                    newRecipes.forEach(r => { const ref = db.collection('recipes').doc(r.id); batch.set(ref, r, { merge: true }); });
+                    await batch.commit();
+                }
+                alert(`修復完成！共重新連結了 ${repairedCount} 個項目。\n請回到食譜管理檢查。`);
+                setIsRelinking(false);
+            };
+
+            const handleHardReset = async () => {
+                if (!confirm("⚠️ 超級警告 ⚠️\n\n這會刪除「本機」和「雲端」的所有資料。\n資料將無法復原！\n\n您確定嗎？")) return;
+                setIsWiping(true);
+                try {
+                    if (firebaseStatus === 'connected') {
+                        const db = firebase.firestore();
+                        const collections = ['recipes', 'ingredients', 'packaging', 'orders', 'stalls'];
+                        for (const col of collections) {
+                            const snapshot = await db.collection(col).get();
+                            if (!snapshot.empty) { const batch = db.batch(); snapshot.docs.forEach(doc => batch.delete(doc.ref)); await batch.commit(); }
+                        }
+                    }
+                    localStorage.clear();
+                    alert("系統已徹底重置！");
+                    window.location.reload();
+                } catch (e) { console.error(e); alert("重置失敗"); setIsWiping(false); }
+            };
+
+            const connectCloud = () => { try { const config = JSON.parse(configInput); onConnectFirebase(config); } catch (e) { alert("設定格式錯誤"); } };
+            const forceUpload = async () => { if (firebaseStatus !== 'connected') return alert("請先連線至雲端！"); if (!confirm("確定要將本機的所有資料上傳並覆蓋雲端嗎？")) return; try { const db = firebase.firestore(); const collections = ['recipes', 'ingredients', 'packaging', 'orders', 'stalls']; const btn = document.getElementById('uploadBtn'); if(btn) btn.innerText = "上傳中..."; for (const col of collections) { const localData = JSON.parse(localStorage.getItem(`baking_${col}_v3`) || '[]'); const batch = db.batch(); for (const item of localData) { const ref = db.collection(col).doc(item.id); batch.set(ref, item, { merge: true }); } await batch.commit(); } alert(`同步成功！`); } catch (e) { console.error(e); alert("上傳發生錯誤"); } finally { const btn = document.getElementById('uploadBtn'); if(btn) btn.innerText = "☁️ 強制上傳本機資料至雲端"; } };
+            
+            return ( <div className="space-y-6"><h2 className="text-2xl font-bold text-gray-800 flex items-center"><Settings className="mr-2"/> 系統設定</h2><Card className="p-6 border-l-4 border-l-indigo-500"><div className="flex justify-between items-start"><div><h3 className="text-xl font-bold flex items-center text-indigo-800">{firebaseStatus === 'connected' ? <Cloud className="mr-2 text-green-500"/> : <CloudOff className="mr-2 text-gray-400"/>}雲端同步</h3><p className="text-sm text-gray-500 mt-1">狀態: {firebaseStatus === 'connected' ? <span className="text-green-600 font-bold">已連線</span> : '未連線'}</p></div>{firebaseStatus === 'connected' && (<button onClick={onDisconnectFirebase} className="px-3 py-1 border border-red-200 text-red-500 rounded hover:bg-red-50 text-sm">中斷連線</button>)}</div>{firebaseStatus === 'connected' ? (<button id="uploadBtn" onClick={forceUpload} className="mt-4 w-full py-3 bg-indigo-600 text-white rounded-lg font-bold shadow hover:bg-indigo-700 flex justify-center items-center"><UploadCloud className="mr-2"/> 強制上傳本機資料至雲端</button>) : (<div className="mt-4 space-y-3"><textarea className="w-full p-3 border rounded-lg font-mono text-xs bg-gray-50 h-32 focus:ring-2 focus:ring-indigo-500" placeholder='Firebase Config JSON' value={configInput} onChange={e => setConfigInput(e.target.value)} /><button onClick={connectCloud} className="bg-indigo-600 text-white px-4 py-2 rounded-lg shadow hover:bg-indigo-700 w-full font-bold">啟用雲端同步</button></div>)}</Card><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><Card className="p-6"><div className="flex items-center mb-4 text-gray-600"><Download className="w-6 h-6 mr-2"/><h3 className="font-bold">備份資料 (匯出)</h3></div><button onClick={handleExport} className="w-full py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">下載 .json 備份檔</button></Card><Card className="p-6"><div className="flex items-center mb-4 text-gray-600"><UploadCloud className="w-6 h-6 mr-2"/><h3 className="font-bold">還原資料 (匯入)</h3></div><input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden" /><button onClick={() => fileInputRef.current.click()} className="w-full py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">選擇檔案還原</button></Card></div><div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200 mt-6"><h3 className="font-bold text-indigo-800 mb-2 flex items-center"><Wrench className="mr-2"/> 進階資料修復</h3><p className="text-sm text-gray-600 mb-3">如果您發現食譜中的食材或包材消失了，請按此按鈕自動修復。</p><button onClick={handleRelinkAll} disabled={isRelinking} className="w-full py-2 bg-indigo-600 text-white font-bold rounded shadow hover:bg-indigo-700 flex justify-center items-center">{isRelinking ? '正在掃描修復中...' : '🔄 智能修復所有連結 (依名稱配對)'}</button></div><div className="border-t pt-6 mt-6 bg-red-50 p-4 rounded-lg border border-red-100"><h3 className="font-bold text-red-700 mb-2 flex items-center"><AlertCircle className="mr-2"/> 危險區域</h3><button onClick={handleHardReset} disabled={isWiping} className="w-full py-3 bg-red-600 text-white font-bold rounded shadow hover:bg-red-700 flex justify-center items-center">{isWiping ? '正在徹底銷毀資料...' : '💀 徹底重置所有資料 (含雲端)'}</button></div></div> );
+        };
+
+        // --- Dashboard ---
+        const Dashboard = ({ recipes, ingredients, packaging, orders, stalls }) => {
+            const [viewDetail, setViewDetail] = useState(null);
+            const [dateRange, setDateRange] = useState({ start: '2024-04-30', end: new Date().toISOString().split('T')[0] });
+            
+            // 🔥 V118: Safe Array + Filter Nulls
+            const safeIngredients = Array.isArray(ingredients) ? ingredients : [];
+            const safePackaging = Array.isArray(packaging) ? packaging : [];
+            const safeOrders = (Array.isArray(orders) ? orders : []).filter(o => o);
+            const safeStalls = (Array.isArray(stalls) ? stalls : []).filter(s => s);
+            const safeRecipes = Array.isArray(recipes) ? recipes : [];
+            
+            const lowStockItems = [ ...safeIngredients.filter(i => !i.parentIngredientId && i.stock < (i.lowStockThreshold || 500)), ...safePackaging.filter(p => p.stock < (p.lowStockThreshold || 20)) ];
+            const pendingOrders = safeOrders.filter(o => o.status === 'pending');
+            const completedOrders = safeOrders.filter(o => o.status === 'completed');
+            
+            const orderRevenue = completedOrders.reduce((acc, order) => acc + (order.totalAmount || 0), 0);
+            const stallRevenue = safeStalls.reduce((acc, stall) => acc + (stall.totalRevenue || 0), 0);
+            const financialData = useMemo(() => {
+                const start = new Date(dateRange.start); const end = new Date(dateRange.end); end.setHours(23, 59, 59);
+                const filteredOrders = completedOrders.filter(o => { const d = new Date(o.date); return d >= start && d <= end; });
+                const filteredStalls = safeStalls.filter(s => { const d = new Date(s.startDate || s.date); return d >= start && d <= end; });
+                let revenue = 0, cost = 0;
+                filteredOrders.forEach(order => { revenue += (order.totalAmount || 0); cost += (order.packagingFee || 0); }); 
+                filteredStalls.forEach(stall => { 
+                    revenue += (stall.totalRevenue || 0); 
+                    cost += (stall.totalCost || 0); 
+                });
+                return { revenue, cost, profit: revenue - cost };
+            }, [dateRange, completedOrders, safeStalls]);
+            const toggleView = (view) => setViewDetail(prev => prev === view ? null : view);
+            return (
+                <div className="space-y-6"><div className="grid grid-cols-2 md:grid-cols-4 gap-4"><Card className={`p-4 ${viewDetail === 'pending' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => toggleView('pending')}><div className="flex items-center space-x-3"><div className="p-3 bg-blue-100 rounded-full text-blue-600"><ClipboardList size={24} /></div><div><p className="text-sm text-gray-500">待出貨</p><p className="text-2xl font-bold">{pendingOrders.length}</p></div></div></Card><Card className={`p-4 ${viewDetail === 'revenue' ? 'ring-2 ring-green-500' : ''}`} onClick={() => toggleView('revenue')}><div className="flex items-center space-x-3"><div className="p-3 bg-green-100 rounded-full text-green-600"><DollarSign size={24} /></div><div><p className="text-sm text-gray-500">總營收</p><p className="text-2xl font-bold">${(orderRevenue + stallRevenue).toLocaleString()}</p></div></div></Card><Card className="p-4"><div className="flex items-center space-x-3"><div className="p-3 bg-indigo-100 rounded-full text-indigo-600"><ChefHat size={24} /></div><div><p className="text-sm text-gray-500">食譜數</p><p className="text-2xl font-bold">{safeRecipes.length}</p></div></div></Card><Card className={`p-4 ${viewDetail === 'lowStock' ? 'ring-2 ring-yellow-500' : ''}`} onClick={() => toggleView('lowStock')}><div className="flex items-center space-x-3"><div className="p-3 bg-yellow-100 rounded-full text-yellow-600"><AlertTriangle size={24} /></div><div><p className="text-sm text-gray-500">缺貨品項</p><p className="text-2xl font-bold text-red-600">{lowStockItems.length}</p></div></div></Card></div>{viewDetail && <div className="bg-white p-4 rounded-xl shadow border border-gray-100 animate-fade-in"><h3 className="font-bold text-lg mb-4 text-gray-700">{viewDetail === 'pending' ? '待出貨清單' : viewDetail === 'revenue' ? '財務報表' : '補貨清單'}</h3><div className="flex justify-end mb-2"><button onClick={() => setViewDetail(null)} className="text-gray-400 hover:text-gray-600"><X /></button></div>{viewDetail === 'pending' && (pendingOrders.length === 0 ? <p>無</p> : <div className="space-y-2">{pendingOrders.map(o => <div key={o.id} className="flex justify-between border-b pb-2"><span>{o.customer}</span><span className="font-bold">${o.totalAmount}</span></div>)}</div>)}{viewDetail === 'revenue' && (<div><div className="flex items-center space-x-2 mb-4"><input type="date" className="border p-1 rounded" value={dateRange.start} onChange={e => setDateRange({...dateRange, start: e.target.value})} />~<input type="date" className="border p-1 rounded" value={dateRange.end} onChange={e => setDateRange({...dateRange, end: e.target.value})} /></div><div className="grid grid-cols-3 gap-4"><div className="text-center p-2 bg-green-50 rounded"><p>收入</p><p className="font-bold text-xl">${financialData.revenue.toLocaleString()}</p></div><div className="text-center p-2 bg-red-50 rounded"><p>支出(估)</p><p className="font-bold text-xl">${financialData.cost.toLocaleString()}</p></div><div className="text-center p-2 bg-indigo-50 rounded"><p>淨利</p><p className="font-bold text-xl">${financialData.profit.toLocaleString()}</p></div></div></div>)}{viewDetail === 'lowStock' && <div className="space-y-2">{lowStockItems.map(i => <div key={i.id} className="flex justify-between text-red-600"><span>{i.name}</span><span>剩 {i.stock} {i.unit}</span></div>)}</div>}</div>}</div>
+            );
+        };
+
+        // --- ReportManager (V118 - Safe Mode) ---
+        const ReportManager = ({ recipes, orders, stalls }) => {
+            const [dateRange, setDateRange] = useState({ start: '2024-04-30', end: new Date().toISOString().split('T')[0] });
+            const [reportType, setReportType] = useState('product'); 
+            const [sourceFilter, setSourceFilter] = useState('all'); 
+            
+            const reportData = useMemo(() => {
+                const start = new Date(dateRange.start); const end = new Date(dateRange.end); end.setHours(23, 59, 59);
+                const aggregated = [];
+                const safeRecipes = Array.isArray(recipes) ? recipes : [];
+                // 🔥 V118: Filter Nulls
+                const safeOrders = (Array.isArray(orders) ? orders : []).filter(o => o);
+                const safeStalls = (Array.isArray(stalls) ? stalls : []).filter(s => s);
+                
+                if (sourceFilter === 'all' || sourceFilter === 'orders') {
+                    safeOrders.forEach(o => { 
+                        if (o.status !== 'completed') return; 
+                        const d = new Date(o.date); if (d < start || d > end) return; 
+                        (o.items||[]).forEach(item => { 
+                            const r = safeRecipes.find(rec => rec.id === item.recipeId); 
+                            aggregated.push({ name: r ? r.name : (item.recipeName || '未知商品'), category: r ? (r.category || '未分類') : '未知', qty: item.qty, revenue: item.qty * (item.price||0), date: d, source: 'order' }); 
+                        }); 
+                    });
+                }
+                if (sourceFilter === 'all' || sourceFilter === 'stalls') {
+                    safeStalls.forEach(s => { 
+                        if (s.status !== 'completed') return; 
+                        const d = new Date(s.startDate || s.date); if (d < start || d > end) return; 
+                        (s.products||[]).forEach(p => { 
+                            const r = safeRecipes.find(rec => rec.id === p.recipeId); 
+                            const realRevenue = (p.soldQty * p.price) - (p.discountAmount || 0);
+                            aggregated.push({ name: r ? r.name : '未知擺攤商品', category: r ? (r.category || '未分類') : '未知', qty: p.soldQty, revenue: realRevenue, date: d, source: 'stall' }); 
+                        }); 
+                    });
+                }
+                const grouped = {};
+                aggregated.forEach(item => { 
+                    let key = item.name; 
+                    if (reportType === 'category') key = item.category; 
+                    if (reportType === 'month') key = item.date && !isNaN(item.date) ? `${item.date.getFullYear()}-${String(item.date.getMonth()+1).padStart(2, '0')}` : '未知日期'; 
+                    if (reportType === 'season') { 
+                        if(item.date && !isNaN(item.date)) {
+                            const m = item.date.getMonth() + 1; 
+                            if (m >= 3 && m <= 5) key = '春季 (3-5月)'; else if (m >= 6 && m <= 8) key = '夏季 (6-8月)'; else if (m >= 9 && m <= 11) key = '秋季 (9-11月)'; else key = '冬季 (12-2月)';
+                        } else { key = '未知季節'; }
+                    } 
+                    if (!grouped[key]) grouped[key] = { label: key, qty: 0, revenue: 0 }; 
+                    grouped[key].qty += item.qty; grouped[key].revenue += item.revenue; 
+                });
+                const result = Object.values(grouped).sort((a, b) => b.revenue - a.revenue);
+                const totalRevenue = result.reduce((acc, cur) => acc + cur.revenue, 0);
+                const pieData = result.slice(0, 6).map((item, idx) => ({ label: item.label, value: item.revenue, color: CHART_COLORS[idx % CHART_COLORS.length] })); 
+                return { list: result, totalRevenue, pieData };
+            }, [dateRange, reportType, sourceFilter, orders, stalls, recipes]);
+
+            return (
+                <div className="space-y-6"><div className="flex flex-col space-y-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100"><div className="flex justify-between items-center"><h2 className="text-2xl font-bold text-gray-800 flex items-center"><BarChart2 className="mr-2"/> 銷售報表中心</h2><div className="flex items-center space-x-1 bg-gray-50 px-2 py-1 rounded border"><input type="date" value={dateRange.start} onChange={e => setDateRange({...dateRange, start: e.target.value})} className="bg-transparent text-sm"/><span className="text-gray-400">~</span><input type="date" value={dateRange.end} onChange={e => setDateRange({...dateRange, end: e.target.value})} className="bg-transparent text-sm"/></div></div><div className="flex flex-wrap justify-between items-center gap-4"><div className="flex items-center bg-gray-100 rounded-lg p-1">{['product', 'category', 'month', 'season'].map(type => { const labels = { product: '商品銷售', category: '種類分析', month: '月份趨勢', season: '季節分析' }; return (<button key={type} onClick={() => setReportType(type)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${reportType === type ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{labels[type]}</button>) })}</div><div className="flex items-center bg-indigo-50 rounded-lg p-1 border border-indigo-100"><button onClick={() => setSourceFilter('all')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center transition-colors ${sourceFilter === 'all' ? 'bg-indigo-600 text-white shadow' : 'text-indigo-600 hover:bg-indigo-100'}`}>全部收益</button><button onClick={() => setSourceFilter('orders')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center transition-colors ${sourceFilter === 'orders' ? 'bg-indigo-600 text-white shadow' : 'text-indigo-600 hover:bg-indigo-100'}`}><Globe size={14} className="mr-1"/>網路訂單</button><button onClick={() => setSourceFilter('stalls')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center transition-colors ${sourceFilter === 'stalls' ? 'bg-indigo-600 text-white shadow' : 'text-indigo-600 hover:bg-indigo-100'}`}><Store size={14} className="mr-1"/>擺攤收益</button></div></div></div><div className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="md:col-span-1 space-y-4"><Card className="p-6 bg-gradient-to-br from-indigo-500 to-purple-600 text-white border-none"><p className="text-indigo-100 text-sm font-medium mb-1">{sourceFilter === 'all' ? '總銷售額' : sourceFilter === 'orders' ? '網路訂單總額' : '擺攤總收益'}</p><p className="text-3xl font-bold">${reportData.totalRevenue.toLocaleString()}</p><div className="mt-4 flex items-center text-xs text-indigo-200"><Activity size={14} className="mr-1"/> 統計筆數: {reportData.list.length} 筆項目</div></Card><Card className="p-6"><h4 className="font-bold text-gray-700 mb-4 flex items-center"><PieChart size={18} className="mr-2"/> 營收佔比 (前6名)</h4><div className="flex justify-center mb-4"><SimplePieChart data={reportData.pieData} /></div><div className="space-y-2">{reportData.pieData.map((d, i) => (<div key={i} className="flex justify-between text-xs items-center"><div className="flex items-center"><div className="w-2 h-2 rounded-full mr-2" style={{background: d.color}}></div><span>{d.label}</span></div><span className="font-bold text-gray-600">{Math.round((d.value/reportData.totalRevenue)*100)}%</span></div>))}</div></Card></div><div className="md:col-span-2"><Card className="overflow-hidden"><div className="p-4 border-b bg-gray-50 flex justify-between items-center"><h4 className="font-bold text-gray-700">詳細銷售數據</h4></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-white text-gray-500 border-b"><tr><th className="p-3 w-16 text-center">排名</th><th className="p-3">項目名稱</th><th className="p-3 text-right">銷售數量</th><th className="p-3 text-right">銷售金額</th><th className="p-3 w-24">佔比</th></tr></thead><tbody className="divide-y">{reportData.list.length === 0 ? (<tr><td colSpan="5" className="p-8 text-center text-gray-400">此區間無銷售資料</td></tr>) : reportData.list.map((item, idx) => (<tr key={idx} className="hover:bg-gray-50"><td className="p-3 text-center font-bold text-gray-400">#{idx+1}</td><td className="p-3 font-medium text-gray-800">{item.label}</td><td className="p-3 text-right text-gray-600">{item.qty}</td><td className="p-3 text-right font-bold text-indigo-600">${item.revenue.toLocaleString()}</td><td className="p-3"><div className="flex items-center"><div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden mr-2"><div className="h-full bg-indigo-500" style={{width: `${(item.revenue/reportData.totalRevenue)*100}%`}}></div></div></div></td></tr>))}</tbody></table></div></Card></div></div></div>
+            );
+        };
+
+        // --- RecipeManager (V140 - Batch Delete & Link Health Check) ---
+        // 1. 新增「清空所有食譜」按鈕，解決匯入時舊資料殘留問題。
+        // 2. 新增「健康度檢查」：若食譜中的食材/包材在庫存找不到，顯示紅色驚嘆號。
+        const RecipeManager = ({ recipes, ingredients, packaging, onSave, onDelete, onClearAll }) => {
+            const [editingId, setEditingId] = useState(null);
+            const [recipeForm, setRecipeForm] = useState({ name: '', category: '', sellingPrice: 0, items: [], packagingItems: [], yieldCount: 1, note: '', markupPercent: 0, extraFee: 50 });
+            const categories = ['蛋糕', '麵包', '餅乾', '甜點', '其他'];
+            const fileInputRef = useRef(null);
+
+            const startEdit = (recipe) => {
+                setEditingId(recipe.id);
+                let form = JSON.parse(JSON.stringify(recipe));
+                if (form.markupPercent === undefined) form.markupPercent = 0;
+                if (form.extraFee === undefined) form.extraFee = 50;
+                // 嘗試修復連結 (如果名稱對得上)
+                form.items = form.items.map(item => {
+                    let exists = (ingredients||[]).find(i => i.id === item.id);
+                    if (!exists && item.name) {
+                        const recovered = (ingredients||[]).find(i => i.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+                        if (recovered) { exists = recovered; item.id = recovered.id; }
+                    } else if (exists) { item.name = exists.name; }
+                    return item;
+                });
+                form.packagingItems = (form.packagingItems||[]).map(item => {
+                    let exists = (packaging||[]).find(p => p.id === item.id);
+                    if (!exists && item.name) {
+                        const recovered = (packaging||[]).find(p => p.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+                        if (recovered) { exists = recovered; item.id = recovered.id; }
+                    } else if (exists) { item.name = exists.name; }
+                    return item;
+                });
+                setRecipeForm(form);
+            };
+
+            const startNew = () => {
+                setEditingId('new');
+                setRecipeForm({ name: '', category: '蛋糕', sellingPrice: 0, items: [], packagingItems: [], yieldCount: 1, note: '', markupPercent: 0, extraFee: 50 });
+            };
+
+            // 🔥 V140 新增：檢查食譜連結是否健康
+            const checkRecipeHealth = (recipe) => {
+                let hasError = false;
+                // 檢查食材
+                if (recipe.items && recipe.items.length > 0) {
+                    const missingIng = recipe.items.some(i => !(ingredients || []).find(ing => ing.id === i.id));
+                    if (missingIng) hasError = true;
+                }
+                // 檢查包材
+                if (recipe.packagingItems && recipe.packagingItems.length > 0) {
+                    const missingPkg = recipe.packagingItems.some(p => !(packaging || []).find(pkg => pkg.id === p.id));
+                    if (missingPkg) hasError = true;
+                }
+                return hasError;
+            };
+
+            const calculateCost = (form) => {
+                let totalCost = 0;
+                const safeIngredients = Array.isArray(ingredients) ? ingredients : [];
+                const safePackaging = Array.isArray(packaging) ? packaging : [];
+                (form.items || []).forEach(item => {
+                    const ing = safeIngredients.find(i => i.id === item.id) || safeIngredients.find(i => i.name === item.name);
+                    if (ing) { const costPerUnit = ing.cost || 0; totalCost += costPerUnit * item.qty; }
+                });
+                (form.packagingItems || []).forEach(item => {
+                    const pkg = safePackaging.find(p => p.id === item.id) || safePackaging.find(p => p.name === item.name);
+                    if (pkg) { const costPerUnit = pkg.cost || 0; totalCost += costPerUnit * item.qty; }
+                });
+                return totalCost / (parseFloat(form.yieldCount) || 1);
+            };
+
+            const calculateNutrition = (form) => {
+                const total = NUTRIENTS.reduce((acc, curr) => ({...acc, [curr.key]: 0}), {});
+                let hasData = false;
+                const safeIngredients = Array.isArray(ingredients) ? ingredients : [];
+                (form.items || []).forEach(item => {
+                    const ing = safeIngredients.find(i => i.id === item.id) || safeIngredients.find(i => i.name === item.name);
+                    if (ing && ing.nutrition) {
+                        hasData = true;
+                        const factor = item.qty / 100;
+                        NUTRIENTS.forEach(nut => { total[nut.key] += (ing.nutrition[nut.key] || 0) * factor; });
+                    }
+                });
+                const yieldCount = parseFloat(form.yieldCount) || 1;
+                const perServing = NUTRIENTS.reduce((acc, curr) => ({ ...acc, [curr.key]: total[curr.key] / yieldCount }), {});
+                return { total, perServing, hasData };
+            };
+
+            const handleImportClick = () => fileInputRef.current.click();
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = window.XLSX.read(data, { type: 'array' });
+                    const jsonData = window.XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                    processExcelData(jsonData);
+                };
+                reader.readAsArrayBuffer(file);
+                e.target.value = '';
+            };
+
+            const processExcelData = (rows) => {
+                let successCount = 0;
+                let failLog = [];
+                const safeIngredients = Array.isArray(ingredients) ? ingredients : [];
+                const safePackaging = Array.isArray(packaging) ? packaging : [];
+                
+                rows.forEach((row, idx) => {
+                    const name = row['名稱'] || row['食譜名稱'];
+                    if (!name) return;
+                    
+                    const newItem = { 
+                        id: generateUniqueId(), 
+                        name: name, 
+                        category: row['分類'] || '其他', 
+                        sellingPrice: parseFloat(row['售價'] || 0), 
+                        yieldCount: parseFloat(row['產出份數'] || 1), 
+                        note: row['備註'] || '', 
+                        markupPercent: parseFloat(row['成本模式'] || 0),
+                        extraFee: 50,
+                        items: [], 
+                        packagingItems: [] 
+                    };
+
+                    const ingStr = row['食材列表'] || row['食材'];
+                    if (ingStr) {
+                        const parts = ingStr.toString().split(/[,，]/);
+                        parts.forEach(p => {
+                            const [iName, iQty] = p.split(/[:：]/);
+                            if (iName && iQty) {
+                                const cleanName = iName.trim();
+                                const targetIng = safeIngredients.find(i => i.name.trim().toLowerCase() === cleanName.toLowerCase());
+                                if (!targetIng) failLog.push(`食譜[${name}]: 找不到食材 "${cleanName}"`);
+                                newItem.items.push({ id: targetIng ? targetIng.id : generateUniqueId(), name: cleanName, qty: parseFloat(iQty) });
+                            }
+                        });
+                    }
+                    const pkgStr = row['包材列表'] || row['包材'];
+                    if (pkgStr) {
+                        const parts = pkgStr.toString().split(/[,，]/);
+                        parts.forEach(p => {
+                            const [pName, pQty] = p.split(/[:：]/);
+                            if (pName && pQty) {
+                                const cleanName = pName.trim();
+                                const targetPkg = safePackaging.find(pkg => pkg.name.trim().toLowerCase() === cleanName.toLowerCase());
+                                if (!targetPkg) failLog.push(`食譜[${name}]: 找不到包材 "${cleanName}"`);
+                                newItem.packagingItems.push({ id: targetPkg ? targetPkg.id : generateUniqueId(), name: cleanName, qty: parseFloat(pQty) });
+                            }
+                        });
+                    }
+                    onSave(newItem);
+                    successCount++;
+                });
+                let msg = `成功匯入 ${successCount} 筆食譜！(已套用成本模式設定)`;
+                if (failLog.length > 0) { msg += `\n\n⚠️ 注意：有 ${failLog.length} 個項目連結失敗 (請檢查名稱是否完全一致)：\n` + failLog.slice(0, 5).join('\n') + (failLog.length > 5 ? '\n...' : ''); }
+                alert(msg);
+            };
+
+            const save = () => { if (!recipeForm.name) return alert('請輸入名稱'); onSave(recipeForm, editingId === 'new' ? null : editingId); setEditingId(null); };
+
+            // 🔥 V140: 確認清空
+            const confirmClearAll = () => {
+                if(confirm("確定要【清空】所有食譜嗎？\n\n這通常用於：想要重新匯入一份全新的 Excel 食譜表。\n此操作無法復原！")) {
+                    onClearAll();
+                }
+            };
+
+            if (editingId) {
+                const currentCost = calculateCost(recipeForm);
+                const profit = (parseFloat(recipeForm.sellingPrice) || 0) - currentCost;
+                const margin = (parseFloat(recipeForm.sellingPrice) || 0) > 0 ? (profit / recipeForm.sellingPrice) * 100 : 0;
+                const nutritionData = calculateNutrition(recipeForm);
+
+                return (
+                    <Modal title={editingId === 'new' ? '新增食譜' : '編輯食譜'} onClose={() => setEditingId(null)}>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div className="space-y-4">
+                                <div><label className="text-xs text-gray-500">食譜名稱</label><input className="w-full border p-2 rounded" value={recipeForm.name} onChange={e => setRecipeForm({ ...recipeForm, name: e.target.value })} /></div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div><label className="text-xs text-gray-500">分類</label><select className="w-full border p-2 rounded" value={recipeForm.category} onChange={e => setRecipeForm({ ...recipeForm, category: e.target.value })}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
+                                    <div><label className="text-xs text-gray-500">販售價格 ($)</label><SafeNumberInput className="w-full border p-2 rounded font-bold text-indigo-700" value={recipeForm.sellingPrice} onChange={v => setRecipeForm({ ...recipeForm, sellingPrice: v })} /></div>
+                                </div>
+                                <div><label className="text-xs text-gray-500">預計產出數量 (份)</label><SafeNumberInput className="w-full border p-2 rounded" value={recipeForm.yieldCount} onChange={v => setRecipeForm({ ...recipeForm, yieldCount: v })} /></div>
+                                
+                                <div className="bg-gray-50 p-4 rounded-lg space-y-3 border border-gray-200">
+                                    <div className="flex justify-between text-sm items-center"><span className="text-gray-500">單份成本:</span><span className="font-bold text-red-600 text-lg">${currentCost.toFixed(1)}</span></div>
+                                    <div className="flex justify-between items-center bg-blue-50 p-2 rounded border border-blue-100 flex-wrap gap-2">
+                                        <div className="flex items-center space-x-1"><span className="text-sm text-blue-700 font-bold">成本 x (1 +</span><input type="number" className="w-14 border border-blue-300 rounded p-1 text-center text-sm font-bold shadow-sm focus:ring-2 focus:ring-blue-400" value={recipeForm.markupPercent} onChange={(e) => { const m = parseFloat(e.target.value) || 0; const fee = parseFloat(recipeForm.extraFee) || 0; const newPrice = Math.ceil(currentCost * (1 + m/100) + fee); setRecipeForm({...recipeForm, markupPercent: m, sellingPrice: newPrice}); }} /><span className="text-sm text-blue-700 font-bold">%)</span></div>
+                                        <div className="flex items-center space-x-1"><span className="text-sm text-blue-700 font-bold">+ 工錢</span><input type="number" className="w-14 border border-blue-300 rounded p-1 text-center text-sm font-bold shadow-sm focus:ring-2 focus:ring-blue-400" value={recipeForm.extraFee} onChange={(e) => { const m = parseFloat(recipeForm.markupPercent) || 0; const fee = parseFloat(e.target.value) || 0; const newPrice = Math.ceil(currentCost * (1 + m/100) + fee); setRecipeForm({...recipeForm, extraFee: fee, sellingPrice: newPrice}); }} /></div>
+                                        <div className="w-full text-right text-xs text-blue-500">= 建議售價 ${Math.ceil(currentCost * (1 + (recipeForm.markupPercent||0)/100) + (recipeForm.extraFee||0))}</div>
+                                    </div>
+                                    <div className="flex justify-between text-sm pt-2 border-t border-gray-200"><span>單份毛利:</span><span className={`font-bold ${profit > 0 ? 'text-green-600' : 'text-red-600'}`}>${profit.toFixed(1)}</span></div>
+                                    <div className="flex justify-between text-sm"><span>毛利率:</span><span className={`font-bold ${margin >= 30 ? 'text-green-600' : 'text-orange-500'}`}>{margin.toFixed(1)}%</span></div>
+                                </div>
+
+                                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                                    <h4 className="font-bold text-green-800 mb-2 flex items-center"><Leaf size={16} className="mr-2"/> 營養標示 (每份)</h4>
+                                    {!nutritionData.hasData ? (<p className="text-xs text-gray-500">尚無數據 (請確保食材已設定營養成分)</p>) : (<div className="grid grid-cols-2 gap-y-1 gap-x-4 text-xs">{NUTRIENTS.map(nut => (<div key={nut.key} className="flex justify-between border-b border-green-100 pb-1"><span className="text-gray-600">{nut.label}</span><span className="font-bold text-green-700">{nutritionData.perServing[nut.key].toFixed(1)} {nut.unit}</span></div>))}</div>)}
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                                    <div className="flex justify-between mb-2"><h4 className="font-bold text-sm text-indigo-800">所需食材 (總量)</h4><button onClick={() => setRecipeForm({ ...recipeForm, items: [...recipeForm.items, { id: ingredients[0]?.id || '', qty: 0 }] })} className="text-xs bg-white border border-indigo-200 px-2 py-1 rounded text-indigo-600">+ 加入</button></div>
+                                    <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                                        {recipeForm.items.map((item, idx) => {
+                                            const ing = (ingredients||[]).find(i => i.id === item.id) || (ingredients||[]).find(i => i.name === item.name);
+                                            const itemCost = ing ? (ing.cost * item.qty) : 0;
+                                            return (
+                                            <div key={idx} className={`flex flex-col p-2 rounded border mb-1 ${!ing ? 'bg-red-50 border-red-200' : 'bg-white border-indigo-100'}`}>
+                                                <div className="flex items-center space-x-1 mb-1">
+                                                    <select className={`flex-1 text-xs p-1 border rounded ${!ing ? 'border-red-500 bg-red-50' : ''}`} value={item.id} onChange={e => { const n = [...recipeForm.items]; const selectedIng = ingredients.find(i => i.id === e.target.value); n[idx].id = e.target.value; n[idx].name = selectedIng ? selectedIng.name : ''; setRecipeForm({ ...recipeForm, items: n }) }}>
+                                                        {!ing && <option value={item.id}>❌ {item.name || '未知'} (連結失效)</option>}
+                                                        {(ingredients||[]).map(i => <option key={i.id} value={i.id}>{i.name} (${(i.cost||0).toFixed(2)}/{i.unit})</option>)}
+                                                    </select>
+                                                    <input type="number" className="w-16 text-xs p-1 border rounded" placeholder="量" value={item.qty} onChange={e => { const n = [...recipeForm.items]; n[idx].qty = parseFloat(e.target.value) || 0; setRecipeForm({ ...recipeForm, items: n }) }} />
+                                                    <button onClick={() => { const n = recipeForm.items.filter((_, i) => i !== idx); setRecipeForm({ ...recipeForm, items: n }) }} className="text-red-400"><X size={14} /></button>
+                                                </div>
+                                                <div className="text-[10px] text-gray-500 flex justify-between"><span>單價: ${ing ? ing.cost.toFixed(4) : 0} x {item.qty}</span><span className="font-bold text-indigo-600">= ${itemCost.toFixed(2)}</span></div>
+                                            </div>
+                                        )})}
+                                    </div>
+                                </div>
+                                <div className="bg-yellow-50 p-3 rounded-lg border border-yellow-100">
+                                    <div className="flex justify-between mb-2"><h4 className="font-bold text-sm text-yellow-800">所需包材 (總量)</h4><button onClick={() => setRecipeForm({ ...recipeForm, packagingItems: [...(recipeForm.packagingItems || []), { id: packaging[0]?.id || '', qty: 0 }] })} className="text-xs bg-white border border-yellow-200 px-2 py-1 rounded text-yellow-600">+ 加入</button></div>
+                                    <div className="max-h-40 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                                        {recipeForm.packagingItems && recipeForm.packagingItems.map((item, idx) => {
+                                            const pkg = (packaging||[]).find(p => p.id === item.id) || (packaging||[]).find(p => p.name === item.name);
+                                            return (
+                                            <div key={idx} className={`flex items-center space-x-1 mb-1 p-1 rounded border ${!pkg ? 'bg-red-50 border-red-200' : 'bg-white'}`}>
+                                                <select className={`flex-1 text-xs p-1 border rounded ${!pkg ? 'border-red-500 bg-red-50' : ''}`} value={item.id} onChange={e => { const n = [...recipeForm.packagingItems]; const p = packaging.find(px=>px.id===e.target.value); n[idx].id = e.target.value; n[idx].name = p?p.name:''; setRecipeForm({ ...recipeForm, packagingItems: n }) }}>
+                                                    {!pkg && <option value={item.id}>❌ {item.name || '未知'} (連結失效)</option>}
+                                                    {(packaging||[]).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                                </select>
+                                                <input type="number" className="w-16 text-xs p-1 border rounded" placeholder="量" value={item.qty} onChange={e => { const n = [...recipeForm.packagingItems]; n[idx].qty = parseFloat(e.target.value) || 0; setRecipeForm({ ...recipeForm, packagingItems: n }) }} />
+                                                <button onClick={() => { const n = recipeForm.packagingItems.filter((_, i) => i !== idx); setRecipeForm({ ...recipeForm, packagingItems: n }) }} className="text-red-400"><X size={14} /></button>
+                                            </div>
+                                        )})}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex justify-end space-x-2 mt-6 pt-4 border-t">
+                            <button onClick={() => setEditingId(null)} className="px-4 py-2 bg-gray-200 rounded">取消</button>
+                            <button onClick={save} className="px-4 py-2 bg-indigo-600 text-white rounded shadow">儲存食譜</button>
+                        </div>
+                    </Modal>
+                );
+            }
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0">
+                        <h2 className="text-2xl font-bold text-gray-800">食譜管理</h2>
+                        <div className="flex space-x-2">
+                             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls" className="hidden" />
+                             <button onClick={handleImportClick} className="bg-green-600 text-white px-4 py-2 rounded shadow flex items-center hover:bg-green-700 text-sm"><Upload size={16} className="mr-1" /> 匯入 Excel</button>
+                             {/* 🔥 V140: 新增清空按鈕 */}
+                             {recipes.length > 0 && <button onClick={confirmClearAll} className="bg-red-500 text-white px-3 py-2 rounded shadow flex items-center hover:bg-red-600 text-sm"><Trash2 size={16} className="mr-1" /> 清空</button>}
+                             <button onClick={startNew} className="bg-indigo-600 text-white px-4 py-2 rounded shadow flex items-center hover:bg-indigo-700 text-sm"><Plus size={16} className="mr-1" /> 新增</button>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {(recipes||[]).map(recipe => {
+                            const cost = calculateCost(recipe);
+                            const profit = recipe.sellingPrice - cost;
+                            // 🔥 V140: 檢查連結健康度
+                            const isBroken = checkRecipeHealth(recipe);
+
+                            return (
+                                <Card key={recipe.id} className="p-4 flex flex-col justify-between group">
+                                    <div>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h3 className="font-bold text-lg text-gray-800 flex items-center">
+                                                {/* 🔥 V140: 若有問題顯示紅驚嘆號 */}
+                                                {isBroken && <AlertCircle size={18} className="text-red-500 mr-1 animate-pulse" title="連結失效：請檢查食材或包材是否在庫存中"/>}
+                                                {recipe.name}
+                                            </h3>
+                                            <Badge color="indigo">{recipe.category}</Badge>
+                                        </div>
+                                        <div className="space-y-1 text-sm text-gray-600 mb-4">
+                                            <div className="flex justify-between"><span>售價:</span><span className="font-bold text-gray-900">${recipe.sellingPrice}</span></div>
+                                            <div className="flex justify-between"><span>成本(估):</span><span>${cost.toFixed(1)}</span></div>
+                                            <div className="flex justify-between pt-1 border-t border-dashed"><span>預估毛利:</span><span className={profit > 0 ? 'text-green-600 font-bold' : 'text-red-500 font-bold'}>${profit.toFixed(1)}</span></div>
+                                            {recipe.markupPercent > 0 && <div className="text-xs bg-blue-50 text-blue-600 px-1 rounded inline-block mt-1">成本 x (1+{recipe.markupPercent}%)</div>}
+                                        </div>
+                                    </div>
+                                    <div className="flex space-x-2 mt-auto">
+                                        <button onClick={() => startEdit(recipe)} className={`flex-1 py-1.5 rounded text-sm flex justify-center items-center ${isBroken ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}><Edit3 size={14} className="mr-1" /> {isBroken ? '修復連結' : '編輯'}</button>
+                                        <button onClick={() => onDelete(recipe.id)} className="px-3 bg-red-50 text-red-500 rounded border border-red-200 hover:bg-red-100 flex items-center justify-center">
+                                            <Trash2 size={16} color="#ef4444" className="mr-1"/> <span className="text-red-500 text-xs font-bold">刪除</span>
+                                        </button>
+                                    </div>
+                                </Card>
+                            )
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+      // --- OrderManager (V137 - CRM Sort by Frequency) ---
+        // 修改：客戶分析 (CRM) 改為預設依照「訂購次數」由高到低排序 (次數相同則比金額)
+        const OrderManager = ({ orders, recipes, onSave, onDelete, onUpdateStatus }) => {
+            const [activeView, setActiveView] = useState('list'); // 'list' | 'crm'
+            const [isCreating, setIsCreating] = useState(false);
+            const [newOrder, setNewOrder] = useState({ customer: '', store: '', shippingFee: 0, packagingFee: 0, items: [], note: '' });
+            const [searchTerm, setSearchTerm] = useState('');
+            const [previewOrders, setPreviewOrders] = useState([]);
+            const [showImportPreview, setShowImportPreview] = useState(false);
+            const [editingId, setEditingId] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const safeOrders = useMemo(() => Array.isArray(orders) ? orders : [], [orders]);
+            const safeRecipes = useMemo(() => Array.isArray(recipes) ? recipes : [], [recipes]);
+
+            const filteredOrders = useMemo(() => {
+                let result = safeOrders;
+                if (searchTerm) {
+                    const lowerTerm = searchTerm.toLowerCase();
+                    result = safeOrders.filter(o => {
+                        if (!o) return false;
+                        const cust = String(o.customer || '').toLowerCase();
+                        const date = String(o.date || '');
+                        const store = String(o.store || '').toLowerCase();
+                        return cust.includes(lowerTerm) || date.includes(lowerTerm) || store.includes(lowerTerm);
+                    });
+                }
+                return result.sort((a, b) => {
+                    const dateDiff = new Date(b.date || 0) - new Date(a.date || 0);
+                    if (dateDiff !== 0) return dateDiff;
+                    return String(b.id).localeCompare(String(a.id));
+                });
+            }, [safeOrders, searchTerm]);
+
+            // 🔥 V137 優化：CRM 排序邏輯調整
+            const customerAnalysis = useMemo(() => {
+                const customers = {};
+                safeOrders.forEach(order => {
+                    if (!order || typeof order !== 'object') return;
+                    if (order.status !== 'completed') return;
+
+                    const custName = order.customer ? String(order.customer).trim() : '未知客戶';
+                    const storeName = order.store ? String(order.store).trim() : '無門市';
+                    const key = `${custName}_${storeName}`;
+                    
+                    if (!customers[key]) {
+                        customers[key] = { id: key, name: custName, store: storeName, totalSpend: 0, orderCount: 0, lastOrderDate: order.date || '', productCounts: {} };
+                    }
+                    
+                    const cust = customers[key];
+                    const amt = parseFloat(order.totalAmount);
+                    cust.totalSpend += isNaN(amt) ? 0 : amt;
+                    cust.orderCount += 1;
+                    
+                    if (order.date) {
+                        if (!cust.lastOrderDate || new Date(order.date) > new Date(cust.lastOrderDate)) {
+                            cust.lastOrderDate = order.date;
+                        }
+                    }
+
+                    if (Array.isArray(order.items)) {
+                        order.items.forEach(item => {
+                            if (!item) return;
+                            let pName = '未知商品';
+                            const r = safeRecipes.find(rec => rec.id === item.recipeId);
+                            if (r && r.name) pName = r.name;
+                            else if (item.recipeName) pName = item.recipeName;
+                            
+                            if (!cust.productCounts[pName]) cust.productCounts[pName] = 0;
+                            const qty = parseFloat(item.qty);
+                            cust.productCounts[pName] += isNaN(qty) ? 0 : qty;
+                        });
+                    }
+                });
+
+                return Object.values(customers).map(c => {
+                    const topProducts = Object.entries(c.productCounts)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([name, qty]) => ({ name, qty }));
+
+                    let tag = '🌱 新客';
+                    let tagColorClass = 'bg-gray-500';
+                    if (c.orderCount >= 5) { tag = '👑 VIP'; tagColorClass = 'bg-yellow-500'; }
+                    else if (c.orderCount >= 2) { tag = '❤️ 回購客'; tagColorClass = 'bg-pink-500'; }
+
+                    return { ...c, avgOrderValue: c.orderCount > 0 ? Math.round(c.totalSpend / c.orderCount) : 0, topProducts, tag, tagColorClass };
+                })
+                // 🔥 V137 修改排序：先比次數(大到小)，次數一樣比總金額(大到小)
+                .sort((a, b) => {
+                    if (b.orderCount !== a.orderCount) {
+                        return b.orderCount - a.orderCount;
+                    }
+                    return b.totalSpend - a.totalSpend;
+                });
+            }, [safeOrders, safeRecipes]);
+
+            const handleAddItem = () => { 
+                if (safeRecipes.length === 0) return alert('請先建立食譜'); 
+                setNewOrder({...newOrder, items: [...(newOrder.items||[]), { recipeId: safeRecipes[0].id, qty: 1, price: safeRecipes[0].sellingPrice }]}); 
+            };
+            
+            const calculateTotal = (order) => { 
+                if (!order || !Array.isArray(order.items)) return 0;
+                const itemsTotal = order.items.reduce((acc, item) => {
+                    const price = parseFloat(item.price) || 0;
+                    const qty = parseFloat(item.qty) || 0;
+                    return acc + (price * qty);
+                }, 0); 
+                const ship = parseFloat(order.shippingFee) || 0;
+                const pkg = parseFloat(order.packagingFee) || 0;
+                return itemsTotal + ship + pkg;
+            };
+            
+            const openEditModal = (order) => { setEditingId(order.id); setNewOrder(order); setIsCreating(true); };
+            
+            const submitOrder = () => { 
+                if (!newOrder.customer) return alert('請輸入客戶名稱'); 
+                if (!newOrder.items || newOrder.items.length === 0) return alert('請加入商品'); 
+                const finalOrder = { ...newOrder, totalAmount: calculateTotal(newOrder) };
+                if (!editingId) { finalOrder.date = new Date().toISOString().split('T')[0]; finalOrder.status = 'pending'; }
+                if (editingId && newOrder.status) finalOrder.status = newOrder.status;
+                onSave(finalOrder, editingId); closeModal();
+            };
+            
+            const closeModal = () => { setIsCreating(false); setEditingId(null); setNewOrder({ customer: '', store: '', shippingFee: 0, packagingFee: 0, items: [], note: '' }); };
+            const handleImportClick = () => fileInputRef.current.click();
+            
+            const handleForceComplete = (order) => {
+                if(!confirm("這將會把訂單設為「已完成」，但【不會】再次扣除庫存。\n\n適用於：匯入舊資料、或已經手動扣過庫存的訂單。\n\n確定嗎？")) return;
+                onSave({ ...order, status: 'completed' }, order.id);
+            };
+
+            const handleFileUpload = async (e) => { 
+                const file = e.target.files[0]; if (!file) return; 
+                try { 
+                    if (!window.XLSX) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"); 
+                    const reader = new FileReader(); 
+                    reader.onload = (evt) => { 
+                        const data = new Uint8Array(evt.target.result); 
+                        const workbook = window.XLSX.read(data, { type: 'array', cellDates: true }); 
+                        const jsonData = window.XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]); 
+                        processExcelData(jsonData); 
+                    }; 
+                    reader.readAsArrayBuffer(file); 
+                } catch (error) { console.error(error); alert("匯入失敗: " + error.message); } e.target.value = ''; 
+            };
+            
+            const processExcelData = (rows) => {
+                const groupedOrders = {};
+                const findKey = (row, keywords) => { 
+                    const keys = Object.keys(row); 
+                    for (const kw of keywords) { 
+                        if (row[kw] !== undefined) return row[kw]; 
+                        const foundKey = keys.find(k => k.replace(/\s/g, '').includes(kw.replace(/\s/g, ''))); 
+                        if (foundKey) return row[foundKey]; 
+                    } 
+                    return undefined; 
+                };
+
+                const parseExcelDate = (val) => {
+                    if (!val) return new Date().toISOString().split('T')[0];
+                    let dateObj = null;
+                    if (val instanceof Date) { dateObj = val; } 
+                    else if (typeof val === 'string') { dateObj = new Date(val); } 
+                    else if (typeof val === 'number') { dateObj = new Date(Math.round((val - 25569) * 86400 * 1000)); }
+                    if (!dateObj || isNaN(dateObj.getTime())) return new Date().toISOString().split('T')[0];
+                    const offset = dateObj.getTimezoneOffset() * 60000;
+                    const localDate = new Date(dateObj.getTime() - offset);
+                    return localDate.toISOString().split('T')[0];
+                };
+
+                rows.forEach(row => {
+                    const rawDate = findKey(row, ['訂購日期', '日期']);
+                    const date = parseExcelDate(rawDate);
+                    const customer = String(findKey(row, ['收件人姓名', '收件人', '客戶名稱']) || '未知客戶').trim();
+                    const store = String(findKey(row, ['取貨門市', '門市', '取貨地址']) || '').trim(); 
+                    const productName = findKey(row, ['商品名稱', '品名', '品名/規格']);
+                    const price = parseFloat(findKey(row, ['價格', '單價']) || 0);
+                    const qty = parseInt(findKey(row, ['數量']) || 1);
+                    const shipping = parseFloat(findKey(row, ['運費', '運費(B)']) || 0);
+                    
+                    let recipeId = `UNKNOWN_${productName || 'unknown'}`;
+                    let finalPrice = price;
+                    
+                    if (safeRecipes.length > 0 && productName) {
+                        const recipe = safeRecipes.find(r => r.name.trim() === String(productName).trim());
+                        if (recipe) {
+                            recipeId = recipe.id;
+                            if (finalPrice === 0) finalPrice = recipe.sellingPrice;
+                        }
+                    }
+
+                    const key = `${date}_${customer}`;
+                    if (!groupedOrders[key]) { 
+                        groupedOrders[key] = { date, customer, store, shippingFee: shipping, packagingFee: 0, status: 'pending', items: [], totalAmount: 0 }; 
+                    } else {
+                        if (!groupedOrders[key].store && store) { groupedOrders[key].store = store; }
+                        if (shipping > groupedOrders[key].shippingFee) { groupedOrders[key].shippingFee = shipping; }
+                    }
+                    
+                    if (productName) { groupedOrders[key].items.push({ recipeId, recipeName: productName, qty, price: finalPrice }); }
+                });
+                
+                const parsedList = Object.values(groupedOrders).map(order => { 
+                    order.totalAmount = calculateTotal(order); 
+                    const hasUnknown = order.items.some(i => i.recipeId && i.recipeId.startsWith('UNKNOWN')); 
+                    if (hasUnknown) { order.note = "⚠️ 注意：包含未知商品"; order.hasError = true; } 
+                    return order; 
+                });
+                
+                if (parsedList.length > 0) { setPreviewOrders(parsedList); setShowImportPreview(true); } 
+                else { alert("檔案中沒有有效的訂單資料。"); }
+            };
+            
+            const confirmImport = () => { 
+                let importCount = 0; 
+                previewOrders.forEach(order => { const { hasError, ...cleanOrder } = order; onSave(cleanOrder); importCount++; }); 
+                alert(`成功匯入 ${importCount} 筆訂單！`); setShowImportPreview(false); setPreviewOrders([]); 
+            };
+
+            if (showImportPreview) { return (<Modal title="匯入預覽" onClose={() => setShowImportPreview(false)}><div className="space-y-4">{previewOrders.map((order, idx) => (<div key={idx} className={`bg-white rounded-lg p-4 shadow-sm border-l-4 ${order.hasError ? 'border-red-500' : 'border-green-500'}`}><div className="flex justify-between"><div className="font-bold">{order.customer} <span className="text-xs text-gray-400 font-normal">{order.date}</span></div><div className="font-bold text-indigo-600">${order.totalAmount}</div></div><div className="text-sm mt-2">{order.items.map((i, k) => <div key={k}>{i.recipeName} x{i.qty}</div>)}</div>{order.store && <div className="text-xs text-gray-500 mt-1 flex items-center"><Store size={10} className="mr-1"/>{order.store}</div>}</div>))}</div><div className="pt-4 flex justify-end space-x-3"><button onClick={() => setShowImportPreview(false)} className="px-6 py-2 bg-gray-100 rounded-lg">取消</button><button onClick={confirmImport} className="px-6 py-2 bg-indigo-600 text-white rounded-lg">確認匯入</button></div></Modal>); }
+            
+            if (isCreating) {
+                return (
+                    <Modal title={editingId ? "編輯訂單" : "建立新訂單"} onClose={closeModal}>
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-bold text-gray-700">客戶姓名</label><input className="w-full border p-2 rounded mt-1" value={newOrder.customer} onChange={e => setNewOrder({...newOrder, customer: e.target.value})} /></div><div><label className="block text-sm font-bold text-gray-700">取貨門市</label><input className="w-full border p-2 rounded mt-1" value={newOrder.store} onChange={e => setNewOrder({...newOrder, store: e.target.value})} /></div></div>
+                            <div>
+                                <div className="flex justify-between items-center mb-2"><label className="block text-sm font-bold text-gray-700">訂購商品</label><button onClick={handleAddItem} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">+ 加入商品</button></div>
+                                {newOrder.items && newOrder.items.map((item, idx) => (
+                                    <div key={idx} className="flex space-x-2 mb-2 items-center">
+                                        <select className="flex-1 border p-2 rounded" value={item.recipeId} onChange={e => { const r = safeRecipes.find(rec => rec.id === e.target.value); const newItems = [...newOrder.items]; newItems[idx].recipeId = e.target.value; newItems[idx].price = r ? r.sellingPrice : 0; setNewOrder({...newOrder, items: newItems}); }}>{safeRecipes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                                        <SafeNumberInput className="w-16 border p-2 rounded text-center" value={item.qty} onChange={v => { const newItems = [...newOrder.items]; newItems[idx].qty = parseInt(v) || 1; setNewOrder({...newOrder, items: newItems}); }} placeholder="量"/>
+                                        <button onClick={() => { const newItems = newOrder.items.filter((_, i) => i !== idx); setNewOrder({...newOrder, items: newItems}); }} className="text-red-400"><Trash2 size={18} /></button>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                <div><label className="block text-sm font-bold text-gray-700">運費 (向客人收)</label><SafeNumberInput className="w-full border p-2 rounded mt-1" value={newOrder.shippingFee} onChange={v => setNewOrder({...newOrder, shippingFee: parseFloat(v) || 0})} /></div>
+                                <div><label className="block text-sm font-bold text-indigo-700">加收包材費 (向客人收)</label><SafeNumberInput className="w-full border p-2 rounded mt-1 text-indigo-700 font-bold" value={newOrder.packagingFee} onChange={v => setNewOrder({...newOrder, packagingFee: parseFloat(v) || 0})} placeholder="0"/><p className="text-[10px] text-gray-400 mt-1">*此金額會加總至總金額</p></div>
+                            </div>
+                            <div className="text-right font-bold text-lg mt-4 text-indigo-600 bg-gray-50 p-2 rounded">總金額: ${calculateTotal(newOrder)}</div>
+                            <div className="flex justify-end space-x-3 border-t pt-4 mt-4"><button onClick={closeModal} className="px-6 py-2 bg-gray-200 rounded-lg font-bold text-gray-600">取消</button><button onClick={submitOrder} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow-lg hover:bg-indigo-700">儲存訂單</button></div>
+                        </div>
+                    </Modal>
+                );
+            }
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0">
+                        <div className="flex items-center space-x-4">
+                            <h2 className="text-2xl font-bold text-gray-800">訂單管理</h2>
+                            <div className="bg-gray-100 p-1 rounded-lg flex space-x-1">
+                                <button onClick={() => setActiveView('list')} className={`px-3 py-1.5 rounded-md text-sm font-bold transition-all flex items-center ${activeView === 'list' ? 'bg-white text-indigo-600 shadow' : 'text-gray-500 hover:text-gray-700'}`}><ClipboardList size={16} className="mr-1"/> 訂單列表</button>
+                                <button onClick={() => setActiveView('crm')} className={`px-3 py-1.5 rounded-md text-sm font-bold transition-all flex items-center ${activeView === 'crm' ? 'bg-purple-600 text-white shadow' : 'text-gray-500 hover:text-gray-700'}`}><Users size={16} className="mr-1"/> 客戶分析 (CRM)</button>
+                            </div>
+                        </div>
+                        {activeView === 'list' && (
+                            <div className="flex space-x-2">
+                                <div className="relative"><Search className="absolute left-3 top-2.5 text-gray-400" size={16} /><input type="text" placeholder="搜尋..." className="pl-9 pr-3 py-2 border rounded-lg text-sm w-48 focus:ring-2 focus:ring-indigo-500 focus:outline-none" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
+                                <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
+                                <button onClick={handleImportClick} className="bg-green-600 text-white px-3 py-2 rounded-lg flex items-center shadow hover:bg-green-700 whitespace-nowrap"><Upload size={18} className="mr-1 hidden md:block" /> 匯入</button>
+                                <button onClick={() => { setEditingId(null); setNewOrder({ customer: '', store: '', shippingFee: 0, packagingFee: 0, items: [], note: '' }); setIsCreating(true); }} className="bg-indigo-600 text-white px-3 py-2 rounded-lg flex items-center shadow hover:bg-indigo-700 whitespace-nowrap"><Plus size={18} className="mr-1 hidden md:block" /> 新增</button>
+                            </div>
+                        )}
+                    </div>
+
+                    {activeView === 'list' && (
+                        <div className="grid grid-cols-1 gap-4">
+                            {filteredOrders.length === 0 && <p className="text-center text-gray-400 py-10">{searchTerm ? '找不到符合的訂單' : '尚無訂單'}</p>}
+                            {filteredOrders.map(order => (
+                                <div key={order.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-start hover:border-indigo-200 transition-colors">
+                                    <div className="w-full md:w-3/4">
+                                        <div className="flex items-center space-x-2 flex-wrap mb-3">
+                                            <span className="font-bold text-lg text-gray-800">{order.customer}</span>
+                                            <Badge color={order.status === 'completed' ? 'green' : 'yellow'}>{order.status === 'completed' ? '已完成' : '待處理'}</Badge>
+                                            <span className="text-xs text-gray-400 flex items-center"><Calendar size={12} className="mr-1"/>{order.date}</span>
+                                            {order.store && <span className="text-xs text-gray-500 flex items-center bg-gray-100 px-2 py-0.5 rounded"><Store size={10} className="mr-1"/>{order.store}</span>}
+                                        </div>
+                                        <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-2 border border-gray-100">
+                                            {(order.items && order.items.length > 0) ? order.items.map((item, idx) => { 
+                                                let rName = '(已刪除的食譜)';
+                                                if (safeRecipes && Array.isArray(safeRecipes)) { const r = safeRecipes.find(rec => rec.id === item.recipeId); if (r) rName = r.name; else if (item.recipeName) rName = item.recipeName; } else if (item.recipeName) { rName = item.recipeName; }
+                                                const isUnknown = rName === '(已刪除的食譜)'; 
+                                                return (<div key={idx} className={`flex justify-between items-center ${isUnknown ? 'text-red-400' : 'text-gray-700'}`}><div className="flex items-center"><div className={`w-1 h-1 rounded-full mr-2 ${isUnknown ? 'bg-red-400' : 'bg-gray-400'}`}></div><span className="font-medium">{rName}</span><span className="text-gray-400 mx-2">x</span><span className="font-bold">{item.qty}</span></div><span className="text-gray-500">${(item.price * item.qty).toLocaleString()}</span></div>); 
+                                            }) : <div className="text-gray-400 text-center py-2">無商品資料</div>}
+                                            <div className="border-t border-gray-200 pt-2 space-y-1"><div className="flex justify-between items-center text-gray-500 text-xs"><span>運費</span><span>${order.shippingFee || 0}</span></div>{order.packagingFee > 0 && (<div className="flex justify-between items-center text-indigo-500 text-xs"><span>包材費</span><span>+${order.packagingFee}</span></div>)}</div>
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-col items-end space-y-2 w-full md:w-auto mt-4 md:mt-0 pl-4 md:border-l border-gray-100 h-full justify-center">
+                                        <div className="text-xs text-gray-400">總金額</div>
+                                        <div className="font-bold text-indigo-600 text-2xl">${order.totalAmount ? order.totalAmount.toLocaleString() : 0}</div>
+                                        {order.status === 'pending' && (
+                                            <div className="w-full space-y-2 mb-2">
+                                                <button onClick={() => onUpdateStatus(order, 'completed')} className="w-full bg-green-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm text-sm hover:bg-green-700 w-full justify-center"><CheckCircle size={16} className="mr-1" /> 完成並扣庫存</button>
+                                                <button onClick={() => handleForceComplete(order)} className="w-full bg-gray-100 text-gray-600 px-4 py-2 rounded-lg flex items-center shadow-sm text-xs hover:bg-gray-200 w-full justify-center border border-gray-200"><FileText size={14} className="mr-1" /> 補登 (不扣庫存)</button>
+                                            </div>
+                                        )}
+                                        <div className="flex space-x-2 w-full">
+                                            <button onClick={() => openEditModal(order)} className="flex-1 bg-indigo-50 text-indigo-600 py-1.5 rounded-lg text-sm hover:bg-indigo-100 flex items-center justify-center font-medium shadow-sm border border-indigo-100"><Edit3 size={16} className="mr-1"/> 修改</button>
+                                            <button onClick={() => onDelete(order.id)} className="flex-1 bg-white border border-red-200 text-red-500 py-1.5 rounded-lg text-sm hover:bg-red-50 flex items-center justify-center font-medium shadow-sm"><Trash2 size={16} className="mr-1"/> 刪除</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {activeView === 'crm' && (
+                        <div className="space-y-4">
+                            <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 text-purple-800 text-sm flex items-center"><Heart className="mr-2 text-purple-600" size={20}/> <span>客戶分析統計範圍：<strong>僅限「已完成 (Completed)」的訂單</strong>。</span></div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {customerAnalysis.map((cust) => (
+                                    <Card key={cust.id} className="p-4 hover:shadow-md transition-shadow relative overflow-hidden">
+                                            <div className={`absolute top-0 right-0 p-1.5 rounded-bl-xl text-xs font-bold text-white ${cust.tagColorClass}`}>{cust.tag}</div>
+                                            <div className="flex items-center mb-3"><div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold mr-3 ${cust.tag === '👑 VIP' ? 'bg-yellow-100 text-yellow-600' : 'bg-gray-100 text-gray-500'}`}>{cust.name.charAt(0)}</div><div><h3 className="font-bold text-lg text-gray-800">{cust.name}</h3><p className="text-xs text-gray-500 flex items-center"><Store size={10} className="mr-1"/> {cust.store}</p></div></div>
+                                            <div className="grid grid-cols-3 gap-2 text-center bg-gray-50 p-2 rounded-lg mb-3"><div><p className="text-[10px] text-gray-400">總消費</p><p className="font-bold text-indigo-600">${cust.totalSpend.toLocaleString()}</p></div><div><p className="text-[10px] text-gray-400">訂購次數</p><p className="font-bold text-gray-700">{cust.orderCount} 次</p></div><div><p className="text-[10px] text-gray-400">客單價</p><p className="font-bold text-gray-700">${cust.avgOrderValue}</p></div></div>
+                                            <div><p className="text-xs font-bold text-gray-500 mb-1 flex items-center"><Heart size={10} className="mr-1"/> 購買喜好 (Top 3)</p><div className="space-y-1">{cust.topProducts.map((p, i) => (<div key={i} className="flex justify-between text-sm items-center"><span className="truncate flex-1 text-gray-700">{p.name}</span><span className="text-xs bg-indigo-50 text-indigo-600 px-1.5 rounded-full">x{p.qty}</span></div>))}</div></div>
+                                            <div className="mt-3 pt-2 border-t border-gray-100 text-[10px] text-gray-400 text-right">最後訂購日: {cust.lastOrderDate}</div>
+                                    </Card>
+                                ))}
+                                {customerAnalysis.length === 0 && <div className="col-span-full text-center py-10 text-gray-400">尚無已完成的訂單資料</div>}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+       // --- StallManager (V144 - Edit Mode Fix) ---
+        // 修復：點擊「編輯」無反應的問題 (加強對舊資料的兼容性，自動補齊缺少的欄位)
+        // 功能全包：含折價、贈品備註、紅色刪除按鈕、成本偵探
+        const StallManager = ({ stalls, recipes, ingredients, packaging, onSave, onDelete, onDeductStock }) => {
+            const [editingId, setEditingId] = useState(null);
+            const [stallForm, setStallForm] = useState({ name: '', location: '', startDate: '', endDate: '', boothFee: 0, miscFee: 0, products: [], gifts: [], status: 'pending' });
+
+            const safeStallsList = (Array.isArray(stalls) ? stalls : [])
+                .filter(s => s !== null && s !== undefined)
+                .sort((a, b) => {
+                    const dateA = new Date(a.startDate || a.date || 0).getTime();
+                    const dateB = new Date(b.startDate || b.date || 0).getTime();
+                    return dateB - dateA;
+                });
+
+            const getDetailedCost = (recipeId) => {
+                const r = recipes.find(rc => rc.id === recipeId);
+                if (!r) return { ingCostPerPortion: 0, pkgCostPerPortion: 0, totalPerPortion: 0, yieldCount: 1 };
+                
+                let ingCostBatch = 0;
+                let pkgCostBatch = 0;
+                
+                (r.items || []).forEach(item => {
+                    const ing = ingredients.find(i => i.id === item.id) || ingredients.find(i => i.name === item.name);
+                    if (ing) { ingCostBatch += (ing.cost || 0) * item.qty; }
+                });
+
+                (r.packagingItems || []).forEach(item => {
+                    const pkg = packaging.find(p => p.id === item.id) || packaging.find(p => p.name === item.name);
+                    if (pkg) { pkgCostBatch += (pkg.cost || 0) * item.qty; }
+                });
+
+                const yieldCount = parseFloat(r.yieldCount) || 1;
+                
+                return {
+                    ingCostPerPortion: ingCostBatch / yieldCount,
+                    pkgCostPerPortion: pkgCostBatch / yieldCount,
+                    totalPerPortion: (ingCostBatch + pkgCostBatch) / yieldCount,
+                    yieldCount: yieldCount
+                };
+            };
+
+            // 🔥 V144 修復重點：startEdit
+            const startEdit = (stall) => {
+                try {
+                    setEditingId(stall.id);
+                    let form = JSON.parse(JSON.stringify(stall));
+                    
+                    // 防呆補全：如果舊資料沒有這些欄位，自動補上，防止當機
+                    if (!form.startDate) form.startDate = form.date || '';
+                    if (!form.endDate) form.endDate = form.date || '';
+                    if (!form.miscFee) form.miscFee = 0;
+                    
+                    form.products = (form.products || []).map(p => ({ 
+                        ...p, 
+                        unit: p.unit || 'portion', 
+                        discount: p.discount || 0  // 補上折價欄位
+                    }));
+                    
+                    form.gifts = (form.gifts || []).map(g => ({ 
+                        ...g, 
+                        note: g.note || '' // 補上備註欄位
+                    }));
+                    
+                    setStallForm(form);
+                } catch (e) {
+                    console.error("編輯載入失敗", e);
+                    alert("載入資料時發生錯誤，請稍後再試。");
+                }
+            };
+
+            const startNew = () => {
+                setEditingId('new');
+                setStallForm({ 
+                    name: '', location: '', 
+                    startDate: new Date().toISOString().split('T')[0], 
+                    endDate: new Date().toISOString().split('T')[0], 
+                    boothFee: 0, miscFee: 0, 
+                    products: [], gifts: [], 
+                    status: 'pending' 
+                });
+            };
+
+            const calculateDynamicStats = (form) => {
+                let estRevenue = 0;
+                let estTotalCost = 0; 
+                let totalIngCost = 0;
+                let totalPkgCost = 0;
+
+                (form.products || []).forEach(p => {
+                    const rowRevenue = ((p.soldQty || 0) * (p.price || 0)) - (p.discount || 0);
+                    estRevenue += rowRevenue;
+
+                    const breakdown = getDetailedCost(p.recipeId);
+                    const totalQty = (p.soldQty || 0) + (p.wasteQty || 0) + (p.tastingQty || 0);
+                    
+                    const thisIngCost = totalQty * breakdown.ingCostPerPortion;
+                    const thisPkgCost = totalQty * breakdown.pkgCostPerPortion;
+                    
+                    totalIngCost += thisIngCost;
+                    totalPkgCost += thisPkgCost;
+                    estTotalCost += (thisIngCost + thisPkgCost);
+                });
+
+                (form.gifts || []).forEach(g => {
+                     const breakdown = getDetailedCost(g.recipeId);
+                     const thisIngCost = (g.qty || 0) * breakdown.ingCostPerPortion;
+                     const thisPkgCost = (g.qty || 0) * breakdown.pkgCostPerPortion;
+                     totalIngCost += thisIngCost;
+                     totalPkgCost += thisPkgCost;
+                     estTotalCost += (thisIngCost + thisPkgCost);
+                });
+
+                const fixedFee = (parseFloat(form.boothFee) || 0) + (parseFloat(form.miscFee) || 0);
+                estTotalCost += fixedFee;
+
+                return { revenue: estRevenue, totalCost: estTotalCost, netProfit: estRevenue - estTotalCost, totalIngCost, totalPkgCost, fixedFee };
+            };
+
+            const save = () => {
+                if (!stallForm.name) return alert('請輸入活動名稱');
+                const stats = calculateDynamicStats(stallForm);
+                onSave({ ...stallForm, totalRevenue: stats.revenue, totalCost: stats.totalCost }, editingId === 'new' ? null : editingId);
+                setEditingId(null);
+            };
+
+            const addProduct = () => {
+                const r = recipes[0];
+                if (!r) return alert('請先建立食譜');
+                setStallForm({
+                    ...stallForm,
+                    products: [...stallForm.products, { recipeId: r.id, price: r.sellingPrice, prepareQty: 0, soldQty: 0, wasteQty: 0, tastingQty: 0, unit: 'portion', discount: 0 }]
+                });
+            };
+
+            const addGift = () => {
+                const r = recipes[0];
+                if (!r) return alert('請先建立食譜');
+                setStallForm({
+                    ...stallForm,
+                    gifts: [...stallForm.gifts, { recipeId: r.id, qty: 1, note: '' }]
+                });
+            };
+
+            if (editingId) {
+                const stats = calculateDynamicStats(stallForm);
+
+                return (
+                    <Modal title={editingId === 'new' ? '新增擺攤' : '編輯擺攤'} onClose={() => setEditingId(null)}>
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div><label className="text-xs text-gray-500">活動名稱</label><input className="w-full border p-2 rounded" value={stallForm.name} onChange={e => setStallForm({ ...stallForm, name: e.target.value })} /></div>
+                                <div><label className="text-xs text-gray-500">地點</label><input className="w-full border p-2 rounded" value={stallForm.location} onChange={e => setStallForm({ ...stallForm, location: e.target.value })} /></div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 bg-gray-50 p-2 rounded">
+                                <div><label className="text-xs text-gray-500">開始日期</label><input type="date" className="w-full border p-2 rounded" value={stallForm.startDate} onChange={e => setStallForm({ ...stallForm, startDate: e.target.value })} /></div>
+                                <div><label className="text-xs text-gray-500">結束日期</label><input type="date" className="w-full border p-2 rounded" value={stallForm.endDate} onChange={e => setStallForm({ ...stallForm, endDate: e.target.value })} /></div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 bg-red-50 p-2 rounded border border-red-100">
+                                <div><label className="text-xs text-red-700 font-bold">攤位費</label><SafeNumberInput className="w-full border p-2 rounded" value={stallForm.boothFee} onChange={v => setStallForm({ ...stallForm, boothFee: v })} /></div>
+                                <div><label className="text-xs text-red-700 font-bold">雜支/其他費用</label><SafeNumberInput className="w-full border p-2 rounded" value={stallForm.miscFee} onChange={v => setStallForm({ ...stallForm, miscFee: v })} /></div>
+                            </div>
+                            
+                            <div className="bg-white border rounded-xl overflow-hidden">
+                                <div className="bg-indigo-50 p-3 border-b flex justify-between items-center">
+                                    <h4 className="font-bold text-indigo-800">販售商品 (有營收)</h4>
+                                    <button onClick={addProduct} className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded shadow">+ 加入商品</button>
+                                </div>
+                                <div className="p-3 space-y-4 max-h-80 overflow-y-auto custom-scrollbar bg-gray-100">
+                                    {stallForm.products.map((prod, idx) => {
+                                        const costDetail = getDetailedCost(prod.recipeId);
+                                        const subtotal = (prod.soldQty || 0) * (prod.price || 0);
+                                        const rowNet = subtotal - (prod.discount || 0);
+
+                                        return (
+                                        <div key={idx} className="flex flex-col bg-white p-3 rounded-lg border shadow-sm relative gap-3">
+                                            {/* 刪除按鈕 */}
+                                            <button 
+                                                onClick={() => { const n = stallForm.products.filter((_, i) => i !== idx); setStallForm({ ...stallForm, products: n }) }} 
+                                                className="absolute top-2 right-2 flex items-center bg-red-50 text-red-500 hover:bg-red-100 px-2 py-1 rounded text-xs font-bold border border-red-100 z-10"
+                                            >
+                                                <Trash2 size={14} className="mr-1"/> 移除
+                                            </button>
+
+                                            <div className="flex justify-between items-center pr-16">
+                                                <select className="flex-1 border p-1.5 rounded text-sm mr-2 font-bold text-gray-700" value={prod.recipeId} onChange={e => {
+                                                    const n = [...stallForm.products];
+                                                    const r = recipes.find(x => x.id === e.target.value);
+                                                    n[idx] = { ...n[idx], recipeId: e.target.value, price: r ? r.sellingPrice : 0 };
+                                                    setStallForm({ ...stallForm, products: n });
+                                                }}>
+                                                    {(recipes||[]).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                                </select>
+                                                <select className="w-20 border p-1.5 rounded text-sm bg-gray-50" value={prod.unit} onChange={e => {
+                                                    const n = [...stallForm.products];
+                                                    n[idx].unit = e.target.value;
+                                                    setStallForm({ ...stallForm, products: n });
+                                                }}>
+                                                    <option value="portion">份/個</option>
+                                                    <option value="g">克(g)</option>
+                                                </select>
+                                            </div>
+                                            
+                                            <div className="text-[10px] text-gray-500 bg-indigo-50 p-1.5 rounded flex justify-between px-2">
+                                                <span>單份成本: <b>${(costDetail.totalPerPortion || 0).toFixed(1)}</b></span>
+                                                <span className="text-gray-400">(食材${(costDetail.ingCostPerPortion || 0).toFixed(1)} / 包材${(costDetail.pkgCostPerPortion || 0).toFixed(1)})</span>
+                                            </div>
+
+                                            <div className="grid grid-cols-4 gap-2 text-center">
+                                                <div><label className="text-[10px] text-gray-400 block">單價</label><input type="number" className="w-full border p-1 rounded text-sm text-center" value={prod.price} onChange={e => { const n = [...stallForm.products]; n[idx].price = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} /></div>
+                                                <div><label className="text-[10px] text-gray-400 block">準備量</label><input type="number" className="w-full border p-1 rounded text-sm text-center" value={prod.prepareQty} onChange={e => { const n = [...stallForm.products]; n[idx].prepareQty = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} /></div>
+                                                <div><label className="text-[10px] text-gray-400 block font-bold text-green-600">售出</label><input type="number" className="w-full border p-1 rounded text-sm text-center font-bold text-green-600 bg-green-50" value={prod.soldQty} onChange={e => { const n = [...stallForm.products]; n[idx].soldQty = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} /></div>
+                                                <div className="flex gap-1">
+                                                    <div><label className="text-[10px] text-gray-400 block">耗損</label><input type="number" className="w-full border p-1 rounded text-sm text-center text-red-500" value={prod.wasteQty || 0} onChange={e => { const n = [...stallForm.products]; n[idx].wasteQty = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} /></div>
+                                                    <div><label className="text-[10px] text-gray-400 block">試吃</label><input type="number" className="w-full border p-1 rounded text-sm text-center text-orange-500" value={prod.tastingQty || 0} onChange={e => { const n = [...stallForm.products]; n[idx].tastingQty = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} /></div>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center justify-end space-x-2 mt-1 pt-2 border-t border-gray-100">
+                                                <span className="text-xs text-gray-400">小計 ${subtotal}</span>
+                                                <span className="text-xs text-gray-400">-</span>
+                                                <div className="flex items-center bg-red-50 rounded px-1">
+                                                    <span className="text-xs text-red-500 mr-1">折價</span>
+                                                    <input type="number" className="w-16 text-xs p-1 border border-red-200 rounded text-right text-red-600 font-bold" placeholder="0" value={prod.discount} onChange={e => { const n = [...stallForm.products]; n[idx].discount = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, products: n }) }} />
+                                                </div>
+                                                <span className="text-xs text-gray-400">=</span>
+                                                <span className="text-sm font-bold text-indigo-700">實收 ${Math.max(0, rowNet)}</span>
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            </div>
+                            
+                            <div className="bg-white border rounded-xl overflow-hidden">
+                                <div className="bg-yellow-50 p-3 border-b flex justify-between items-center">
+                                    <h4 className="font-bold text-yellow-800 flex items-center"><Gift size={16} className="mr-2"/> 促銷/贈品 (扣庫存/無營收)</h4>
+                                    <button onClick={addGift} className="text-xs bg-yellow-600 text-white px-3 py-1.5 rounded shadow">+ 加入贈品</button>
+                                </div>
+                                <div className="p-2 space-y-2">
+                                    {stallForm.gifts && stallForm.gifts.map((gift, idx) => (
+                                        <div key={idx} className="flex flex-col p-2 border rounded bg-yellow-50/50 gap-2 relative">
+                                            <button 
+                                                onClick={() => { const n = stallForm.gifts.filter((_, i) => i !== idx); setStallForm({ ...stallForm, gifts: n }) }} 
+                                                className="absolute top-2 right-2 text-red-400 hover:text-red-600 p-1"
+                                            >
+                                                <X size={16} />
+                                            </button>
+
+                                            <div className="flex items-center pr-6">
+                                                <select className="flex-1 text-xs p-1 bg-transparent border-none outline-none font-bold text-gray-700" value={gift.recipeId} onChange={e => {
+                                                    const n = [...stallForm.gifts];
+                                                    n[idx].recipeId = e.target.value;
+                                                    setStallForm({ ...stallForm, gifts: n });
+                                                }}>
+                                                    {(recipes||[]).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                                </select>
+                                                <input type="number" className="w-16 text-xs p-1 rounded border text-center" placeholder="數量" value={gift.qty} onChange={e => { const n = [...stallForm.gifts]; n[idx].qty = parseFloat(e.target.value) || 0; setStallForm({ ...stallForm, gifts: n }) }} />
+                                            </div>
+                                            
+                                            <div className="flex items-center border-t border-yellow-200 pt-1">
+                                                <span className="text-[10px] text-yellow-700 mr-2 whitespace-nowrap">備註:</span>
+                                                <input type="text" className="flex-1 text-xs p-1 bg-white border border-yellow-200 rounded text-gray-600" placeholder="例如: 買一送一..." value={gift.note || ''} onChange={e => { const n = [...stallForm.gifts]; n[idx].note = e.target.value; setStallForm({ ...stallForm, gifts: n }) }} />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="flex justify-between items-center bg-gray-100 p-3 rounded-lg text-sm">
+                                <div>預估營收: <span className="font-bold">${stats.revenue.toLocaleString()}</span></div>
+                                <div className="text-right">
+                                    <div className="font-bold text-red-500">總成本: ${Math.round(stats.totalCost).toLocaleString()}</div>
+                                    <div className="text-[10px] text-gray-500">
+                                        (食材${Math.round(stats.totalIngCost)} / 包材${Math.round(stats.totalPkgCost)} / 攤位雜支${Math.round(stats.fixedFee)})
+                                    </div>
+                                </div>
+                                <div>淨利: <span className={`font-bold ${stats.netProfit > 0 ? 'text-green-600' : 'text-red-500'}`}>${stats.netProfit.toLocaleString()}</span></div>
+                            </div>
+                            
+                            <div className="flex justify-end space-x-3 pt-4 border-t">
+                                <button onClick={() => setEditingId(null)} className="px-4 py-2 bg-gray-200 rounded">取消</button>
+                                <button onClick={save} className="px-4 py-2 bg-indigo-600 text-white rounded shadow">儲存活動</button>
+                            </div>
+                        </div>
+                    </Modal>
+                );
+            }
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex justify-between items-center"><h2 className="text-2xl font-bold text-gray-800">擺攤管理</h2><button onClick={startNew} className="bg-indigo-600 text-white px-4 py-2 rounded shadow flex items-center"><Plus size={18} className="mr-1" /> 新增擺攤</button></div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                        {safeStallsList.map(stall => {
+                             const isCompleted = stall.status === 'completed';
+                             const displayDate = stall.startDate === stall.endDate ? stall.startDate : `${stall.startDate} ~ ${stall.endDate}`;
+                             const revenue = stall.totalRevenue || 0;
+                             const cost = stall.totalCost || 0;
+                             const netProfit = revenue - cost;
+                             
+                             return (
+                                <Card key={stall.id} className="p-4 flex flex-col justify-between">
+                                    <div className="mb-4">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div><h3 className="font-bold text-lg">{stall.name}</h3><p className="text-xs text-gray-500 flex items-center"><MapPin size={10} className="mr-1"/>{stall.location}</p></div>
+                                            <Badge color={isCompleted ? 'green' : 'yellow'}>{isCompleted ? '已結算' : '進行中'}</Badge>
+                                        </div>
+                                        <div className="text-sm text-gray-600 space-y-1">
+                                            <div className="flex items-center text-xs"><Calendar size={12} className="mr-2"/> {displayDate}</div>
+                                            <div className="flex items-center justify-between bg-gray-50 p-2 rounded"><span>總營收</span><span className="font-bold text-indigo-600">${revenue.toLocaleString()}</span></div>
+                                            <div className="flex justify-between text-xs text-gray-400 mt-1">
+                                                <span>物料/攤位費: ${Math.round(cost).toLocaleString()}</span>
+                                                <span className={`${netProfit >= 0 ? 'text-green-600' : 'text-red-500'} font-bold`}>淨利: ${netProfit.toLocaleString()}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {!isCompleted && <button onClick={() => onDeductStock(stall)} className="w-full py-2 bg-green-50 text-green-600 border border-green-200 rounded font-bold hover:bg-green-100 flex justify-center items-center"><CheckCircle size={16} className="mr-1"/> 結算並扣庫存</button>}
+                                        <div className="flex space-x-2">
+                                            <button onClick={() => startEdit(stall)} className="flex-1 py-1.5 bg-gray-100 text-gray-600 rounded text-sm hover:bg-gray-200">編輯詳細</button>
+                                            <button onClick={() => onDelete(stall.id)} className="px-3 bg-red-50 text-red-500 rounded border border-red-100 flex items-center justify-center"><Trash2 size={16} color="#ef4444" className="mr-1"/><span className="text-xs font-bold">刪除</span></button>
+                                        </div>
+                                    </div>
+                                </Card>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- InventoryTable (V139 - Clear All Button Added) ---
+        // 新增：右上角加入「清空所有資料」按鈕，方便在匯入錯誤時一次重來
+        const InventoryTable = ({ type, data, onSave, onDelete, onClearAll }) => {
+            const [editingId, setEditingId] = useState(null);
+            const [editForm, setEditForm] = useState({ name: '', unit: 'g', packPrice: 0, packSize: 0, packCount: 0, yieldRate: 100, cost: 0, stock: 0, lowStockThreshold: 0, supplier: '', purchaseDate: '', nutrition: {} });
+            const isIngredient = type === 'ingredients';
+            const title = isIngredient ? '食材庫存' : '包材庫存';
+            const fileInputRef = useRef(null);
+
+            const startEdit = (item) => { 
+                setEditingId(item.id); 
+                const packSize = item.packSize || 0; 
+                const defaultNutrition = NUTRIENTS.reduce((acc, curr) => ({...acc, [curr.key]: 0}), {});
+                let displayYield = item.yieldRate;
+                if (displayYield <= 1 && displayYield > 0) displayYield = displayYield * 100;
+                setEditForm({ ...item, packPrice: item.packPrice !== undefined ? item.packPrice : (item.cost || 0), packSize: item.packSize !== undefined ? item.packSize : 0, packCount: item.packCount !== undefined ? item.packCount : (item.packSize > 0 ? (item.stock / item.packSize) : 0), yieldRate: displayYield, nutrition: item.nutrition || defaultNutrition, lowStockThreshold: item.lowStockThreshold || 0, purchaseDate: item.purchaseDate || '', supplier: item.supplier || '', unit: item.unit || 'g' }); 
+            };
+            const startNew = () => { setEditingId('new'); setEditForm({ name: '', unit: 'g', packPrice: 0, packSize: 0, packCount: 0, yieldRate: 100, cost: 0, stock: 0, lowStockThreshold: 0, supplier: '', purchaseDate: new Date().toISOString().split('T')[0], nutrition: NUTRIENTS.reduce((acc, curr) => ({...acc, [curr.key]: 0}), {}) }); };
+            const handlePurchaseChange = (field, value) => { const newForm = { ...editForm, [field]: value }; const pPrice = parseFloat(newForm.packPrice) || 0; const pSize = parseFloat(newForm.packSize) || 0; const pCount = parseFloat(newForm.packCount) || 0; let pYield = parseFloat(newForm.yieldRate); if (pSize > 0) { const yieldFactor = (pYield || 100) / 100; newForm.cost = pPrice / (pSize * yieldFactor); } if (!newForm.parentIngredientId) { newForm.stock = pSize * pCount; } setEditForm(newForm); };
+            const handleImportClick = () => fileInputRef.current.click();
+            const handleFileUpload = async (e) => { const file = e.target.files[0]; if (!file) return; try { if (!window.XLSX) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"); const reader = new FileReader(); reader.onload = (evt) => { const data = new Uint8Array(evt.target.result); const workbook = window.XLSX.read(data, { type: 'array' }); const jsonData = window.XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]); processExcelData(jsonData); }; reader.readAsArrayBuffer(file); } catch (error) { console.error(error); alert("匯入失敗"); } e.target.value = ''; };
+            const processExcelData = (rows) => { let count = 0; const findKey = (row, keywords) => { const keys = Object.keys(row); for (const kw of keywords) { if (row[kw] !== undefined) return row[kw]; const foundKey = keys.find(k => k.includes(kw)); if (foundKey) return row[foundKey]; } return undefined; }; rows.forEach(row => { const name = findKey(row, ['名稱', '品項']); if (!name) return; const packPrice = parseFloat(findKey(row, ['進價', '價格']) || 0); const packSize = parseFloat(findKey(row, ['重量', '規格']) || 0); let unit = findKey(row, ['單位']) || 'g'; if(unit === '個') unit = 'pc'; const supplier = findKey(row, ['供應商', '廠商']) || ''; const lowStockThreshold = parseFloat(findKey(row, ['安全水位', '警示', '低庫存']) || 0); let yieldRate = 100; if (row['得率(%)'] !== undefined) yieldRate = row['得率(%)']; else if (row['得率%'] !== undefined) yieldRate = row['得率%']; else { const cleanKey = Object.keys(row).find(k => k.includes('得率') && !k.match(/[價額錢]/)); if (cleanKey) yieldRate = row[cleanKey]; } if (yieldRate <= 1 && yieldRate > 0) { yieldRate = yieldRate * 100; } yieldRate = parseFloat(yieldRate) || 100; const yieldFactor = yieldRate / 100; let cost = 0; if (packSize > 0) cost = packPrice / (packSize * yieldFactor); const nutrition = {}; NUTRIENTS.forEach(n => { nutrition[n.key] = parseFloat(findKey(row, [n.label]) || 0); }); const newItem = { id: generateUniqueId(), name, packPrice, packSize, unit, yieldRate, cost, stock: 0, lowStockThreshold, supplier, purchaseDate: new Date().toISOString().split('T')[0], nutrition }; onSave(newItem); count++; }); alert(`成功匯入 ${count} 筆資料！`); };
+            const save = () => { if (!editForm.name) return alert('請輸入名稱'); onSave(editForm, editingId === 'new' ? null : editingId); setEditingId(null); };
+            const closeModal = () => { setEditingId(null); setEditForm({}); };
+
+            // 🔥 V139: 清空確認
+            const confirmClearAll = () => {
+                if (confirm(`確定要【清空】所有${title}資料嗎？\n\n此操作無法復原！`)) {
+                    onClearAll();
+                }
+            };
+
+            if (editingId) {
+                const potentialParents = data.filter(i => i.id !== editingId && !i.parentIngredientId);
+                const rawUnitPrice = editForm.packSize > 0 ? (editForm.packPrice / editForm.packSize) : 0;
+                const realCost = typeof editForm.cost === 'number' ? editForm.cost : 0;
+                return (<Modal title={`${editingId === 'new' ? '新增' : '編輯'} ${isIngredient ? '食材' : '包材'}`} onClose={closeModal}><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-4"><h4 className="font-bold text-indigo-600 border-b pb-2">基本資料</h4><div><label className="block text-xs font-bold text-gray-500 uppercase">品名</label><input className="w-full p-2 border rounded" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} placeholder="例如: 麵粉" /></div>{isIngredient && (<div className="bg-indigo-50 p-3 rounded border border-indigo-100"><label className="block text-xs font-bold text-indigo-700 mb-1 flex items-center"><Link size={14} className="mr-1"/> 連結實際庫存</label><select className="w-full p-2 border rounded text-sm" value={editForm.parentIngredientId || ''} onChange={e => setEditForm({...editForm, parentIngredientId: e.target.value, stock: 0})}><option value="">無 (獨立庫存)</option>{potentialParents.map(p => <option key={p.id} value={p.id}>連結至: {p.name} (庫存: {p.stock}{p.unit})</option>)}</select></div>)}<div className="bg-gray-50 p-4 rounded-lg space-y-3 border border-gray-200"><h5 className="font-bold text-sm text-gray-700">採購資訊 / 成本設定</h5><div className="flex space-x-2"><div className="flex-1"><label className="text-xs text-gray-500">一包價格($)</label><SafeNumberInput className="w-full p-2 border rounded bg-white" value={editForm.packPrice} onChange={v => handlePurchaseChange('packPrice', v)} /></div><div className="flex-1"><label className="text-xs text-gray-500">重量/規格</label><SafeNumberInput className="w-full p-2 border rounded bg-white" value={editForm.packSize} onChange={v => handlePurchaseChange('packSize', v)} /></div><div className="w-24"><label className="text-xs text-gray-500">單位</label><select className="w-full p-2 border rounded bg-white h-[42px]" value={editForm.unit} onChange={e=>setEditForm({...editForm, unit: e.target.value})}><option value="g">g</option><option value="ml">ml</option><option value="pc">個</option></select></div></div>{isIngredient && (<div className="flex items-center space-x-2"><div className="flex-1"><label className="text-xs text-gray-500">得率 (%)</label><SafeNumberInput className="w-full p-2 border rounded bg-white" value={editForm.yieldRate} onChange={v => handlePurchaseChange('yieldRate', v)} placeholder="100" /></div><div className="flex-1 pt-4 text-xs text-gray-400">實際可用: {Math.round((parseFloat(editForm.packSize)||0) * ((parseFloat(editForm.yieldRate)||100)/100 || 1))}{editForm.unit}</div></div>)}{!editForm.parentIngredientId && (<div><label className="text-xs text-gray-500">購買包數 (加總庫存)</label><SafeNumberInput className="w-full p-2 border rounded bg-white" value={editForm.packCount} onChange={v => handlePurchaseChange('packCount', v)} /></div>)}<div className="bg-white p-3 border border-indigo-100 rounded text-sm"><div className="flex justify-between text-gray-500 text-xs mb-1"><span>原始單價:</span><span>${rawUnitPrice.toFixed(4)} / {editForm.unit}</span></div><div className="flex justify-between font-bold text-indigo-700 border-t pt-1 mt-1"><span className="flex items-center"><Info size={12} className="mr-1"/>真實單價 (含損耗):</span><span>${realCost < 0.0001 && realCost > 0 ? '< 0.0001' : realCost.toFixed(4)} / {editForm.unit}</span></div></div></div><div className="grid grid-cols-2 gap-2 bg-red-50 p-2 rounded border border-red-100"><div><label className="text-xs text-red-700 font-bold">安全水位</label><SafeNumberInput className="w-full p-2 border rounded bg-white" value={editForm.lowStockThreshold} onChange={v => setEditForm({...editForm, lowStockThreshold: parseFloat(v) || 0})} placeholder="警示值" /></div><div className="flex items-end pb-2 text-xs text-red-500 font-bold">單位: {editForm.unit}</div></div><div className="grid grid-cols-2 gap-2"><div><label className="text-xs text-gray-500">供應商</label><input className="w-full p-2 border rounded" value={editForm.supplier} onChange={e => setEditForm({...editForm, supplier: e.target.value})} /></div><div><label className="text-xs text-gray-500">購入日期</label><input type="date" className="w-full p-2 border rounded" value={editForm.purchaseDate} onChange={e => setEditForm({...editForm, purchaseDate: e.target.value})} /></div></div></div>{isIngredient && (<div className="space-y-4"><h4 className="font-bold text-green-600 border-b pb-2 flex items-center"><FileText size={18} className="mr-2"/> 營養標示 (每 100g)</h4><div className="grid grid-cols-2 gap-3 bg-green-50 p-4 rounded-lg border border-green-100">{NUTRIENTS.map(nut => (<div key={nut.key}><label className="text-xs text-gray-500">{nut.label} ({nut.unit})</label><SafeNumberInput className="w-full p-2 border rounded bg-white focus:ring-1 focus:ring-green-500" value={editForm.nutrition?.[nut.key] || 0} onChange={v => setEditForm({...editForm, nutrition: { ...editForm.nutrition, [nut.key]: parseFloat(v) || 0 }})} /></div>))}</div></div>)}</div><div className="flex justify-end space-x-3 mt-8 pt-4 border-t"><button onClick={closeModal} className="px-6 py-2 bg-gray-200 rounded-lg font-bold text-gray-600">取消</button><button onClick={save} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow-lg hover:bg-indigo-700">儲存資料</button></div></Modal>);
+            }
+            return (
+                <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0">
+                        <h2 className="text-2xl font-bold text-gray-800">{title}</h2>
+                        <div className="flex space-x-2">
+                             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls" className="hidden" />
+                             <button onClick={handleImportClick} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center shadow hover:bg-green-700"><Upload size={18} className="mr-1" /> 匯入 Excel</button>
+                             {/* 🔥 V139: 清空按鈕 */}
+                             {data.length > 0 && <button onClick={confirmClearAll} className="bg-red-500 text-white px-3 py-2 rounded-lg flex items-center shadow hover:bg-red-600 text-sm"><Trash2 size={16} className="mr-1"/> 清空</button>}
+                             <button onClick={startNew} className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center hover:bg-indigo-700"><Plus size={18} className="mr-1" /> 新增</button>
+                        </div>
+                    </div>
+                    <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">{(data||[]).map(item => { const parent = item.parentIngredientId ? data.find(d => d.id === item.parentIngredientId) : null; const isLow = !parent && item.stock < (item.lowStockThreshold || (item.unit==='g'?500:10)); return (<div key={item.id} className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between group hover:border-indigo-300 transition-colors ${isLow ? 'border-red-300 ring-1 ring-red-200' : 'border-gray-100'}`}><div><div className="flex justify-between items-start mb-2"><h4 className="font-bold text-lg text-gray-800">{item.name}</h4>{parent ? (<Badge color="blue">連: {parent.name}</Badge>) : (<Badge color={isLow ? 'red' : 'gray'}>{item.stock} {item.unit}</Badge>)}</div><div className="text-sm text-gray-500 mb-2"><div className="flex items-center"><MapPin size={12} className="mr-1"/> {item.supplier || '未設定'}</div><div className="flex items-center"><Calendar size={12} className="mr-1"/> {item.purchaseDate || '--'}</div></div>{item.packPrice !== undefined && (<div className="text-xs bg-gray-50 p-2 rounded text-gray-600 mb-2">真實單價: ${typeof item.cost === 'number' ? item.cost.toFixed(4) : 0} / {item.unit} {item.yieldRate < 100 && <span className="text-orange-500 ml-1">(得率{item.yieldRate}%)</span>}</div>)}{isLow && <div className="text-xs text-red-500 font-bold flex items-center mb-1"><AlertTriangle size={12} className="mr-1"/> 低於水位 {item.lowStockThreshold}{item.unit}</div>}</div><div className="flex justify-end space-x-2 mt-3 pt-3 border-t border-gray-50"><button onClick={() => startEdit(item)} className="px-3 py-1.5 text-indigo-600 bg-indigo-50 rounded text-sm font-medium flex items-center"><Edit3 size={14} className="mr-1"/> 編輯</button><button onClick={() => onDelete(item.id)} className="px-3 py-1.5 text-red-500 bg-red-50 rounded text-sm font-medium flex items-center border border-red-200 hover:bg-red-100"><Trash2 size={16} className="mr-1"/> 刪除</button></div></div>); })}</div>
+                </div>
+            );
+        };
+
+        // --- App (V146 - Zombie Data Killer) ---
+        // 1. 強制 ID 修復：確保每一筆資料都有獨一無二的 ID，解決「刪一個死全部」的問題。
+        // 2. 同步邏輯優化：確保雲端與本地資料一致。
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+            const [recipes, setRecipes] = useStickyState([], 'baking_recipes_v3');
+            const [ingredients, setIngredients] = useStickyState([], 'baking_ingredients_v3');
+            const [packaging, setPackaging] = useStickyState([], 'baking_packaging_v3');
+            const [orders, setOrders] = useStickyState([], 'baking_orders_v3');
+            const [stalls, setStalls] = useStickyState([], 'baking_stalls_v3');
+            const [firebaseStatus, setFirebaseStatus] = useState('disconnected');
+
+            // 🔥 V146: 強力 ID 修復與去重 (當資料載入時執行)
+            useEffect(() => {
+                const repairAndDedupe = (data, setter, name) => {
+                    if (!Array.isArray(data)) return;
+                    let hasChanges = false;
+                    const seenIds = new Set();
+                    
+                    const fixedData = data.map(item => {
+                        // 1. 如果沒有 ID，配發一個
+                        // 2. 如果 ID 重複，配發新的
+                        let currentId = item.id;
+                        if (!currentId || seenIds.has(currentId)) {
+                            hasChanges = true;
+                            currentId = `fixed_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+                        }
+                        seenIds.add(currentId);
+                        return { ...item, id: currentId };
+                    });
+
+                    if (hasChanges) {
+                        console.log(`正在修復 ${name} 的 ID 問題...`);
+                        setter(fixedData);
+                    }
+                };
+
+                repairAndDedupe(recipes, setRecipes, 'recipes');
+                repairAndDedupe(ingredients, setIngredients, 'ingredients');
+                repairAndDedupe(packaging, setPackaging, 'packaging');
+                repairAndDedupe(orders, setOrders, 'orders');
+                repairAndDedupe(stalls, setStalls, 'stalls');
+            }, [recipes, ingredients, packaging, orders, stalls]);
+
+            useEffect(() => {
+                const savedConfig = localStorage.getItem('baking_firebase_config');
+                if (savedConfig && window.firebase) {
+                    try {
+                        const config = JSON.parse(savedConfig);
+                        if (!firebase.apps.length) firebase.initializeApp(config);
+                        setFirebaseStatus('connected');
+                        
+                        const db = firebase.firestore();
+                        const collections = [
+                            { name: 'recipes', setter: setRecipes },
+                            { name: 'ingredients', setter: setIngredients },
+                            { name: 'packaging', setter: setPackaging },
+                            { name: 'orders', setter: setOrders },
+                            { name: 'stalls', setter: setStalls }
+                        ];
+
+                        const unsubscribes = [];
+                        
+                        collections.forEach(({ name, setter }) => {
+                            const unsub = db.collection(name).onSnapshot(snapshot => {
+                                // V146: 只要雲端有變動，就同步下來 (除非雲端被意外清空)
+                                if (!snapshot.empty) {
+                                    const remoteData = snapshot.docs.map(doc => doc.data());
+                                    // 簡單比對長度，避免無限迴圈
+                                    setter(remoteData);
+                                }
+                            }, error => {
+                                console.error(`同步 ${name} 失敗:`, error);
+                            });
+                            unsubscribes.push(unsub);
+                        });
+
+                        return () => {
+                            unsubscribes.forEach(func => func());
+                        };
+
+                    } catch (e) { console.error("Firebase Init Error", e); }
+                }
+            }, []);
+
+            const onConnectFirebase = (config) => { localStorage.setItem('baking_firebase_config', JSON.stringify(config)); window.location.reload(); };
+            const onDisconnectFirebase = () => { localStorage.removeItem('baking_firebase_config'); window.location.reload(); };
+            
+            const handleSave = async (col, data, id) => { 
+                const map = { 'recipes': setRecipes, 'ingredients': setIngredients, 'packaging': setPackaging, 'orders': setOrders, 'stalls': setStalls }; 
+                const setter = map[col]; 
+                // 確保 ID 存在
+                const newId = id || `doc_${Date.now()}_${Math.random().toString(36).substr(2,5)}`; 
+                const finalData = { ...data, id: newId };
+
+                setter(prev => { 
+                    const safePrev = Array.isArray(prev) ? prev : [];
+                    if (id) return safePrev.map(item => item.id === id ? finalData : item); 
+                    return [...safePrev, finalData]; 
+                }); 
+                
+                if (firebaseStatus === 'connected') { 
+                    try { await firebase.firestore().collection(col).doc(newId).set(finalData, { merge: true }); } 
+                    catch(e) { alert("雲端儲存失敗，請檢查網路！"); }
+                } 
+            };
+            
+            const handleDelete = async (col, id) => { 
+                if (!confirm('確定刪除？此操作無法復原。')) return; 
+                const map = { 'recipes': setRecipes, 'ingredients': setIngredients, 'packaging': setPackaging, 'orders': setOrders, 'stalls': setStalls }; 
+                
+                // 1. 本地刪除
+                map[col](prev => (Array.isArray(prev) ? prev : []).filter(i => String(i.id) !== String(id))); 
+                
+                // 2. 雲端刪除
+                if (firebaseStatus === 'connected') {
+                    try { await firebase.firestore().collection(col).doc(id).delete(); } 
+                    catch (e) { console.error("雲端刪除失敗", e); }
+                }
+            };
+
+            const handleClearAll = async (col) => {
+                const map = { 'recipes': setRecipes, 'ingredients': setIngredients, 'packaging': setPackaging, 'orders': setOrders, 'stalls': setStalls }; 
+                map[col]([]);
+                if (firebaseStatus === 'connected') {
+                    const db = firebase.firestore();
+                    const batch = db.batch();
+                    const snapshot = await db.collection(col).get();
+                    snapshot.docs.forEach((doc) => { batch.delete(doc.ref); });
+                    try { await batch.commit(); alert("雲端資料也已清空！"); } 
+                    catch(e) { console.error(e); alert("本地已清空，但雲端刪除部分失敗。"); }
+                }
+            };
+            
+            const handleCompleteOrder = (order, newStatus) => { 
+                if (!confirm(`確定要將訂單設為 ${newStatus} 並扣除相應庫存嗎？`)) return; 
+                let errors = []; const newIng = [...ingredients]; const newPkg = [...packaging]; 
+                order.items.forEach(item => { 
+                    const r = recipes.find(rec => rec.id === item.recipeId); 
+                    if (!r) { errors.push(`錯誤：找不到商品「${item.recipeName}」的食譜。`); return; } 
+                    if(r.items) { r.items.forEach(ri => { let targetId = ri.id; const originalIng = newIng.find(i => i.id === ri.id); if (originalIng && originalIng.parentIngredientId) targetId = originalIng.parentIngredientId; const ingIdx = newIng.findIndex(i => i.id === targetId); if(ingIdx > -1) { const deduct = (ri.qty / (r.yieldCount||1)) * item.qty; newIng[ingIdx] = {...newIng[ingIdx], stock: newIng[ingIdx].stock - deduct}; } else { errors.push(`警告：找不到食材 ID:${targetId}`); } }); } 
+                    if(r.packagingItems) { r.packagingItems.forEach(pi => { const pkgIdx = newPkg.findIndex(p => p.id === pi.id); if(pkgIdx > -1) { newPkg[pkgIdx] = {...newPkg[pkgIdx], stock: newPkg[pkgIdx].stock - (pi.qty * item.qty)}; } else { errors.push(`警告：找不到包材 ID:${pi.id}`); } }) } 
+                }); 
+                if (errors.length > 0) alert(errors.join('\n')); 
+                setIngredients(newIng); setPackaging(newPkg); 
+                handleSave('orders', {...order, status: newStatus}, order.id);
+                newIng.forEach(i => handleSave('ingredients', i, i.id));
+                newPkg.forEach(p => handleSave('packaging', p, p.id));
+                alert('訂單已完成並扣除庫存！'); 
+            };
+
+            const handleStallStockDeduct = (stall) => { 
+                if (!confirm('確定要依照製作量與贈品扣除庫存嗎？')) return; 
+                const newIng = [...ingredients]; const newPkg = [...packaging]; 
+                (stall.products || []).forEach(prod => { 
+                    const r = recipes.find(rec => rec.id === prod.recipeId); 
+                    if(r) { 
+                        const totalDeductQty = (prod.soldQty || 0) + (prod.wasteQty || 0) + (prod.tastingQty || 0);
+                        if(totalDeductQty > 0) {
+                            const recipeDetails = (() => {
+                                let totalWeight = 0;
+                                (r.items||[]).forEach(i => {
+                                    const ing = ingredients.find(ing => ing.id === i.id) || ingredients.find(ing => ing.name === i.name);
+                                    if(ing && (ing.unit === 'g' || ing.unit === 'ml')) totalWeight += i.qty;
+                                });
+                                return { totalWeight, yieldCount: r.yieldCount || 1 };
+                            })();
+                            let deductRatio = 0;
+                            if (prod.unit === 'g') { deductRatio = totalDeductQty / (recipeDetails.totalWeight || 1); } 
+                            else { deductRatio = totalDeductQty / (recipeDetails.yieldCount || 1); }
+                            r.items.forEach(ri => { 
+                                let targetId = ri.id; 
+                                const originalIng = newIng.find(i => i.id === ri.id); 
+                                if (originalIng && originalIng.parentIngredientId) targetId = originalIng.parentIngredientId; 
+                                const ingIdx = newIng.findIndex(i => i.id === targetId); 
+                                if(ingIdx > -1) { const deduct = ri.qty * deductRatio; newIng[ingIdx] = {...newIng[ingIdx], stock: newIng[ingIdx].stock - deduct}; } 
+                            }); 
+                             if (prod.unit !== 'g') {
+                                (r.packagingItems || []).forEach(pi => { 
+                                    const pkgIdx = newPkg.findIndex(p => p.id === pi.id); 
+                                    if(pkgIdx > -1) { newPkg[pkgIdx] = {...newPkg[pkgIdx], stock: newPkg[pkgIdx].stock - (pi.qty * totalDeductQty)}; } 
+                                }); 
+                            }
+                        }
+                    } 
+                }); 
+                (stall.gifts || []).forEach(gift => {
+                    const r = recipes.find(rec => rec.id === gift.recipeId);
+                    if(r && gift.qty > 0) {
+                         r.items.forEach(ri => { 
+                            let targetId = ri.id; 
+                            const originalIng = newIng.find(i => i.id === ri.id); 
+                            if (originalIng && originalIng.parentIngredientId) targetId = originalIng.parentIngredientId; 
+                            const ingIdx = newIng.findIndex(i => i.id === targetId); 
+                            if(ingIdx > -1) { const amountPerUnit = ri.qty / (r.yieldCount || 1); const deduct = amountPerUnit * gift.qty; newIng[ingIdx] = {...newIng[ingIdx], stock: newIng[ingIdx].stock - deduct}; } 
+                        });
+                        (r.packagingItems || []).forEach(pi => { 
+                            const pkgIdx = newPkg.findIndex(p => p.id === pi.id); 
+                            if(pkgIdx > -1) { newPkg[pkgIdx] = {...newPkg[pkgIdx], stock: newPkg[pkgIdx].stock - (pi.qty * gift.qty)}; } 
+                        });
+                    }
+                });
+                setIngredients(newIng); setPackaging(newPkg); 
+                handleSave('stalls', {...stall, status: 'completed'}, stall.id);
+                newIng.forEach(i => handleSave('ingredients', i, i.id));
+                newPkg.forEach(p => handleSave('packaging', p, p.id));
+                alert('擺攤庫存 (含耗損、試吃、贈品) 已扣除！'); 
+            };
+
+            const navItems = [ { id: 'dashboard', label: '儀表板', icon: LayoutDashboard }, { id: 'report', label: '銷售報表', icon: BarChart2 }, { id: 'orders', label: '訂單管理', icon: ClipboardList }, { id: 'stalls', label: '擺攤管理', icon: Tent }, { id: 'recipes', label: '食譜管理', icon: ChefHat }, { id: 'ingredients', label: '食材庫存', icon: Utensils }, { id: 'packaging', label: '包材管理', icon: Package }, { id: 'settings', label: '系統設定', icon: Settings }, ];
+            const handleNavClick = (id) => { setActiveTab(id); setIsMobileMenuOpen(false); };
+
+            return (
+                <div className="flex h-screen bg-gray-50 font-sans text-gray-900 overflow-hidden">
+                    {isMobileMenuOpen && (
+                        <div 
+                            className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm transition-opacity"
+                            onClick={() => setIsMobileMenuOpen(false)}
+                        ></div>
+                    )}
+
+                    <aside className={`
+                        fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-out sidebar-transition shadow-2xl
+                        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+                        md:relative md:translate-x-0 md:flex flex-col md:shadow-none md:z-0
+                    `}>
+                        <div className="p-6 border-b border-gray-100 flex justify-between items-center"><h1 className="text-xl font-bold text-indigo-600 flex items-center"><ChefHat className="mr-2"/> 烘焙大師 Pro</h1><button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-500 hover:text-gray-800"><X size={24}/></button></div>
+                        <nav className="flex-1 p-4 space-y-2 overflow-y-auto">{navItems.map(item => (<button key={item.id} onClick={() => handleNavClick(item.id)} className={`w-full flex items-center p-3 rounded-lg transition-colors ${activeTab === item.id ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-500 hover:bg-gray-50'}`}><item.icon className="mr-3" size={20}/>{item.label}</button>))}</nav>
+                    </aside>
+                    
+                    <main className="flex-1 flex flex-col overflow-hidden relative w-full">
+                        {/* 手機版頂部導覽列 */}
+                        <div className="md:hidden bg-white p-4 shadow-sm border-b flex justify-between items-center z-10 sticky top-0">
+                            <h1 className="font-bold text-lg text-indigo-600 flex items-center"><ChefHat size={20} className="mr-2"/> 烘焙大師 Pro</h1>
+                            <button 
+                                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} 
+                                className="flex items-center px-3 py-2 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100 shadow-sm active:bg-indigo-100 transition-colors"
+                            >
+                                <Menu size={20} strokeWidth={2.5} className="mr-1.5" />
+                                <span className="text-sm font-bold">選單</span>
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-auto p-4 md:p-8">
+                            {activeTab === 'dashboard' && <Dashboard recipes={recipes} ingredients={ingredients} packaging={packaging} orders={orders} stalls={stalls} />}
+                            {activeTab === 'report' && <ReportManager recipes={recipes} orders={orders} stalls={stalls} />}
+                            {activeTab === 'orders' && <OrderManager orders={orders} recipes={recipes} onSave={(d, id) => handleSave('orders', d, id)} onDelete={(id) => handleDelete('orders', id)} onUpdateStatus={handleCompleteOrder} />}
+                            {activeTab === 'stalls' && <StallManager stalls={stalls} recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('stalls', d, id)} onDelete={(id) => handleDelete('stalls', id)} onDeductStock={handleStallStockDeduct} />}
+                            {activeTab === 'recipes' && <RecipeManager recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('recipes', d, id)} onDelete={(id) => handleDelete('recipes', id)} onClearAll={() => handleClearAll('recipes')} />}
+                            {activeTab === 'ingredients' && <InventoryTable type="ingredients" data={ingredients} onSave={(d, id) => handleSave('ingredients', d, id)} onDelete={(id) => handleDelete('ingredients', id)} onClearAll={() => handleClearAll('ingredients')} />}
+                            {activeTab === 'packaging' && <InventoryTable type="packaging" data={packaging} onSave={(d, id) => handleSave('packaging', d, id)} onDelete={(id) => handleDelete('packaging', id)} onClearAll={() => handleClearAll('packaging')} />}
+                            {activeTab === 'settings' && <DataManager firebaseStatus={firebaseStatus} onConnectFirebase={onConnectFirebase} onDisconnectFirebase={onDisconnectFirebase} recipes={recipes} ingredients={ingredients} packaging={packaging} setRecipes={setRecipes} />}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
