@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>烘焙大師 Pro - V119 訂單擺攤修復版</title>
+    <title>烘焙大師 Pro - V120 訂單損益分析版</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -67,6 +67,43 @@
                 window.localStorage.setItem(key, JSON.stringify(value));
             }, [key, value]);
             return [value, setValue];
+        };
+
+        // --- Helpers: Financial Calculations (New Feature) ---
+        const calculateRecipeUnitCost = (recipe, ingredients, packaging) => {
+            if (!recipe) return 0;
+            let totalCost = 0;
+            const safeIng = Array.isArray(ingredients) ? ingredients : [];
+            const safePkg = Array.isArray(packaging) ? packaging : [];
+            
+            // Ingredients
+            (recipe.items || []).forEach(item => {
+                const ing = safeIng.find(i => i.id === item.id) || safeIng.find(i => i.name === item.name);
+                if (ing) totalCost += (ing.cost || 0) * item.qty;
+            });
+            // Packaging
+            (recipe.packagingItems || []).forEach(item => {
+                const pkg = safePkg.find(p => p.id === item.id) || safePkg.find(p => p.name === item.name);
+                if (pkg) totalCost += (pkg.cost || 0) * item.qty;
+            });
+            return totalCost / (parseFloat(recipe.yieldCount) || 1);
+        };
+
+        const calculateOrderFinancials = (order, recipes, ingredients, packaging) => {
+            let materialCost = 0;
+            const safeRecipes = Array.isArray(recipes) ? recipes : [];
+            const safeIng = Array.isArray(ingredients) ? ingredients : [];
+            const safePkg = Array.isArray(packaging) ? packaging : [];
+            
+            (order.items || []).forEach(item => {
+                const recipe = safeRecipes.find(r => r.id === item.recipeId);
+                const unitCost = calculateRecipeUnitCost(recipe, safeIng, safePkg);
+                materialCost += unitCost * (item.qty || 0);
+            });
+            
+            // Profit = Total Revenue - Material Cost
+            const profit = (order.totalAmount || 0) - materialCost;
+            return { cost: materialCost, profit };
         };
 
         // --- UI Components ---
@@ -216,7 +253,7 @@
             );
         };
 
-        // --- ReportManager (V118 - Safe Mode) ---
+        // --- ReportManager ---
         const ReportManager = ({ recipes, orders, stalls }) => {
             const [dateRange, setDateRange] = useState({ start: '2024-04-30', end: new Date().toISOString().split('T')[0] });
             const [reportType, setReportType] = useState('product'); 
@@ -276,9 +313,7 @@
             );
         };
 
-        // --- RecipeManager (V140 - Batch Delete & Link Health Check) ---
-        // 1. 新增「清空所有食譜」按鈕，解決匯入時舊資料殘留問題。
-        // 2. 新增「健康度檢查」：若食譜中的食材/包材在庫存找不到，顯示紅色驚嘆號。
+        // --- RecipeManager ---
         const RecipeManager = ({ recipes, ingredients, packaging, onSave, onDelete, onClearAll }) => {
             const [editingId, setEditingId] = useState(null);
             const [recipeForm, setRecipeForm] = useState({ name: '', category: '', sellingPrice: 0, items: [], packagingItems: [], yieldCount: 1, note: '', markupPercent: 0, extraFee: 50 });
@@ -315,15 +350,12 @@
                 setRecipeForm({ name: '', category: '蛋糕', sellingPrice: 0, items: [], packagingItems: [], yieldCount: 1, note: '', markupPercent: 0, extraFee: 50 });
             };
 
-            // 🔥 V140 新增：檢查食譜連結是否健康
             const checkRecipeHealth = (recipe) => {
                 let hasError = false;
-                // 檢查食材
                 if (recipe.items && recipe.items.length > 0) {
                     const missingIng = recipe.items.some(i => !(ingredients || []).find(ing => ing.id === i.id));
                     if (missingIng) hasError = true;
                 }
-                // 檢查包材
                 if (recipe.packagingItems && recipe.packagingItems.length > 0) {
                     const missingPkg = recipe.packagingItems.some(p => !(packaging || []).find(pkg => pkg.id === p.id));
                     if (missingPkg) hasError = true;
@@ -437,7 +469,6 @@
 
             const save = () => { if (!recipeForm.name) return alert('請輸入名稱'); onSave(recipeForm, editingId === 'new' ? null : editingId); setEditingId(null); };
 
-            // 🔥 V140: 確認清空
             const confirmClearAll = () => {
                 if(confirm("確定要【清空】所有食譜嗎？\n\n這通常用於：想要重新匯入一份全新的 Excel 食譜表。\n此操作無法復原！")) {
                     onClearAll();
@@ -580,7 +611,7 @@
 
       // --- OrderManager (V137 - CRM Sort by Frequency) ---
         // 修改：客戶分析 (CRM) 改為預設依照「訂購次數」由高到低排序 (次數相同則比金額)
-        const OrderManager = ({ orders, recipes, onSave, onDelete, onUpdateStatus }) => {
+        const OrderManager = ({ orders, recipes, ingredients, packaging, onSave, onDelete, onUpdateStatus }) => {
             const [activeView, setActiveView] = useState('list'); // 'list' | 'crm'
             const [isCreating, setIsCreating] = useState(false);
             const [newOrder, setNewOrder] = useState({ customer: '', store: '', shippingFee: 0, packagingFee: 0, items: [], note: '' });
@@ -810,9 +841,9 @@
                                 <div className="flex justify-between items-center mb-2"><label className="block text-sm font-bold text-gray-700">訂購商品</label><button onClick={handleAddItem} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">+ 加入商品</button></div>
                                 {newOrder.items && newOrder.items.map((item, idx) => (
                                     <div key={idx} className="flex space-x-2 mb-2 items-center">
-                                        <select className="flex-1 border p-2 rounded" value={item.recipeId} onChange={e => { const r = safeRecipes.find(rec => rec.id === e.target.value); const newItems = [...newOrder.items]; newItems[idx].recipeId = e.target.value; newItems[idx].price = r ? r.sellingPrice : 0; setNewOrder({...newOrder, items: newItems}); }}>{safeRecipes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
-                                        <SafeNumberInput className="w-16 border p-2 rounded text-center" value={item.qty} onChange={v => { const newItems = [...newOrder.items]; newItems[idx].qty = parseInt(v) || 1; setNewOrder({...newOrder, items: newItems}); }} placeholder="量"/>
-                                        <button onClick={() => { const newItems = newOrder.items.filter((_, i) => i !== idx); setNewOrder({...newOrder, items: newItems}); }} className="text-red-400"><Trash2 size={18} /></button>
+                                            <select className="flex-1 border p-2 rounded" value={item.recipeId} onChange={e => { const r = safeRecipes.find(rec => rec.id === e.target.value); const newItems = [...newOrder.items]; newItems[idx].recipeId = e.target.value; newItems[idx].price = r ? r.sellingPrice : 0; setNewOrder({...newOrder, items: newItems}); }}>{safeRecipes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                                            <input type="number" className="w-16 border p-2 rounded text-center" value={item.qty} onChange={v => { const newItems = [...newOrder.items]; newItems[idx].qty = parseInt(v.target.value) || 1; setNewOrder({...newOrder, items: newItems}); }} placeholder="量"/>
+                                            <button onClick={() => { const newItems = newOrder.items.filter((_, i) => i !== idx); setNewOrder({...newOrder, items: newItems}); }} className="text-red-400"><Trash2 size={18} /></button>
                                     </div>
                                 ))}
                             </div>
@@ -850,7 +881,12 @@
                     {activeView === 'list' && (
                         <div className="grid grid-cols-1 gap-4">
                             {filteredOrders.length === 0 && <p className="text-center text-gray-400 py-10">{searchTerm ? '找不到符合的訂單' : '尚無訂單'}</p>}
-                            {filteredOrders.map(order => (
+                            {filteredOrders.map(order => {
+                                // Calculate financial data for this order
+                                const { cost, profit } = calculateOrderFinancials(order, recipes, ingredients, packaging);
+                                const profitMargin = order.totalAmount > 0 ? (profit / order.totalAmount) * 100 : 0;
+
+                                return (
                                 <div key={order.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-start hover:border-indigo-200 transition-colors">
                                     <div className="w-full md:w-3/4">
                                         <div className="flex items-center space-x-2 flex-wrap mb-3">
@@ -872,6 +908,15 @@
                                     <div className="flex flex-col items-end space-y-2 w-full md:w-auto mt-4 md:mt-0 pl-4 md:border-l border-gray-100 h-full justify-center">
                                         <div className="text-xs text-gray-400">總金額</div>
                                         <div className="font-bold text-indigo-600 text-2xl">${order.totalAmount ? order.totalAmount.toLocaleString() : 0}</div>
+                                        
+                                        {/* New Cost/Profit Display */}
+                                        <div className="text-xs text-right w-full mb-2 bg-slate-50 p-2 rounded">
+                                            <div className="text-gray-400 mb-1">成本: ${Math.round(cost).toLocaleString()}</div>
+                                            <div className={profit >= 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}>
+                                                淨利: ${Math.round(profit).toLocaleString()} <span className="text-[10px] opacity-70">({profitMargin.toFixed(0)}%)</span>
+                                            </div>
+                                        </div>
+
                                         {order.status === 'pending' && (
                                             <div className="w-full space-y-2 mb-2">
                                                 <button onClick={() => onUpdateStatus(order, 'completed')} className="w-full bg-green-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm text-sm hover:bg-green-700 w-full justify-center"><CheckCircle size={16} className="mr-1" /> 完成並扣庫存</button>
@@ -884,7 +929,7 @@
                                         </div>
                                     </div>
                                 </div>
-                            ))}
+                            )})}
                         </div>
                     )}
 
@@ -909,9 +954,7 @@
             );
         };
 
-       // --- StallManager (V144 - Edit Mode Fix) ---
-        // 修復：點擊「編輯」無反應的問題 (加強對舊資料的兼容性，自動補齊缺少的欄位)
-        // 功能全包：含折價、贈品備註、紅色刪除按鈕、成本偵探
+        // --- StallManager (V144 - Edit Mode Fix) ---
         const StallManager = ({ stalls, recipes, ingredients, packaging, onSave, onDelete, onDeductStock }) => {
             const [editingId, setEditingId] = useState(null);
             const [stallForm, setStallForm] = useState({ name: '', location: '', startDate: '', endDate: '', boothFee: 0, miscFee: 0, products: [], gifts: [], status: 'pending' });
@@ -951,13 +994,10 @@
                 };
             };
 
-            // 🔥 V144 修復重點：startEdit
             const startEdit = (stall) => {
                 try {
                     setEditingId(stall.id);
                     let form = JSON.parse(JSON.stringify(stall));
-                    
-                    // 防呆補全：如果舊資料沒有這些欄位，自動補上，防止當機
                     if (!form.startDate) form.startDate = form.date || '';
                     if (!form.endDate) form.endDate = form.date || '';
                     if (!form.miscFee) form.miscFee = 0;
@@ -965,12 +1005,12 @@
                     form.products = (form.products || []).map(p => ({ 
                         ...p, 
                         unit: p.unit || 'portion', 
-                        discount: p.discount || 0  // 補上折價欄位
+                        discount: p.discount || 0 
                     }));
                     
                     form.gifts = (form.gifts || []).map(g => ({ 
                         ...g, 
-                        note: g.note || '' // 補上備註欄位
+                        note: g.note || ''
                     }));
                     
                     setStallForm(form);
@@ -1085,7 +1125,6 @@
 
                                         return (
                                         <div key={idx} className="flex flex-col bg-white p-3 rounded-lg border shadow-sm relative gap-3">
-                                            {/* 刪除按鈕 */}
                                             <button 
                                                 onClick={() => { const n = stallForm.products.filter((_, i) => i !== idx); setStallForm({ ...stallForm, products: n }) }} 
                                                 className="absolute top-2 right-2 flex items-center bg-red-50 text-red-500 hover:bg-red-100 px-2 py-1 rounded text-xs font-bold border border-red-100 z-10"
@@ -1240,7 +1279,6 @@
         };
 
         // --- InventoryTable (V139 - Clear All Button Added) ---
-        // 新增：右上角加入「清空所有資料」按鈕，方便在匯入錯誤時一次重來
         const InventoryTable = ({ type, data, onSave, onDelete, onClearAll }) => {
             const [editingId, setEditingId] = useState(null);
             const [editForm, setEditForm] = useState({ name: '', unit: 'g', packPrice: 0, packSize: 0, packCount: 0, yieldRate: 100, cost: 0, stock: 0, lowStockThreshold: 0, supplier: '', purchaseDate: '', nutrition: {} });
@@ -1264,7 +1302,6 @@
             const save = () => { if (!editForm.name) return alert('請輸入名稱'); onSave(editForm, editingId === 'new' ? null : editingId); setEditingId(null); };
             const closeModal = () => { setEditingId(null); setEditForm({}); };
 
-            // 🔥 V139: 清空確認
             const confirmClearAll = () => {
                 if (confirm(`確定要【清空】所有${title}資料嗎？\n\n此操作無法復原！`)) {
                     onClearAll();
@@ -1490,11 +1527,11 @@
                             if (originalIng && originalIng.parentIngredientId) targetId = originalIng.parentIngredientId; 
                             const ingIdx = newIng.findIndex(i => i.id === targetId); 
                             if(ingIdx > -1) { const amountPerUnit = ri.qty / (r.yieldCount || 1); const deduct = amountPerUnit * gift.qty; newIng[ingIdx] = {...newIng[ingIdx], stock: newIng[ingIdx].stock - deduct}; } 
-                        });
+                        }); 
                         (r.packagingItems || []).forEach(pi => { 
                             const pkgIdx = newPkg.findIndex(p => p.id === pi.id); 
                             if(pkgIdx > -1) { newPkg[pkgIdx] = {...newPkg[pkgIdx], stock: newPkg[pkgIdx].stock - (pi.qty * gift.qty)}; } 
-                        });
+                        }); 
                     }
                 });
                 setIngredients(newIng); setPackaging(newPkg); 
@@ -1541,7 +1578,7 @@
                         <div className="flex-1 overflow-auto p-4 md:p-8">
                             {activeTab === 'dashboard' && <Dashboard recipes={recipes} ingredients={ingredients} packaging={packaging} orders={orders} stalls={stalls} />}
                             {activeTab === 'report' && <ReportManager recipes={recipes} orders={orders} stalls={stalls} />}
-                            {activeTab === 'orders' && <OrderManager orders={orders} recipes={recipes} onSave={(d, id) => handleSave('orders', d, id)} onDelete={(id) => handleDelete('orders', id)} onUpdateStatus={handleCompleteOrder} />}
+                            {activeTab === 'orders' && <OrderManager orders={orders} recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('orders', d, id)} onDelete={(id) => handleDelete('orders', id)} onUpdateStatus={handleCompleteOrder} />}
                             {activeTab === 'stalls' && <StallManager stalls={stalls} recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('stalls', d, id)} onDelete={(id) => handleDelete('stalls', id)} onDeductStock={handleStallStockDeduct} />}
                             {activeTab === 'recipes' && <RecipeManager recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('recipes', d, id)} onDelete={(id) => handleDelete('recipes', id)} onClearAll={() => handleClearAll('recipes')} />}
                             {activeTab === 'ingredients' && <InventoryTable type="ingredients" data={ingredients} onSave={(d, id) => handleSave('ingredients', d, id)} onDelete={(id) => handleDelete('ingredients', id)} onClearAll={() => handleClearAll('ingredients')} />}
