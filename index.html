@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>烘焙大師 Pro - V120 訂單損益分析版</title>
+    <title>烘焙大師 Pro - V120 訂單損益分析版 + POS</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -25,6 +25,33 @@
         .fade-in { animation: fadeIn 0.3s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .sidebar-transition { transition: transform 0.3s ease-in-out; }
+
+        /* POS 數字鍵盤按鈕 */
+        .numpad-btn {
+            background-color: white;
+            border-radius: 12px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 64px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            transition: all 0.1s;
+        }
+        .numpad-btn:active {
+            transform: scale(0.95);
+            background-color: #e2e8f0;
+        }
+
+        /* POS 商品按鈕 */
+        .product-btn {
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .product-btn:active {
+            transform: scale(0.96);
+        }
     </style>
 </head>
 <body class="bg-gray-50 text-gray-900 h-screen overflow-hidden">
@@ -46,7 +73,7 @@
             );
         };
         const LucideProxy = new Proxy({}, { get: (target, prop) => (props) => <Icon name={prop} {...props} /> });
-        const { ChefHat, ShoppingBag, PieChart, Package, Utensils, Zap, Plus, Trash2, Save, Image: ImageIcon, ArrowLeft, Search, DollarSign, MapPin, Calculator, Calendar, AlertTriangle, LayoutDashboard, Edit3, X, RefreshCw, ClipboardList, CheckCircle, FileText, Upload, Truck, Store, AlertCircle, Tent, Coins, Filter, Clock, Flame, Percent, Link, Box, TrendingUp, TrendingDown, Activity, BarChart2, Settings, Download, UploadCloud, Cloud, CloudOff, Database, Globe, HelpCircle, Menu, Tag, Gift, EyeOff, PlusCircle, Trash, Info, RefreshCcw, Unplug, Leaf, Wrench, Users, Heart } = LucideProxy;
+        const { ChefHat, ShoppingBag, PieChart, Package, Utensils, Zap, Plus, Trash2, Save, Image: ImageIcon, ArrowLeft, Search, DollarSign, MapPin, Calculator, Calendar, AlertTriangle, LayoutDashboard, Edit3, X, RefreshCw, ClipboardList, CheckCircle, FileText, Upload, Truck, Store, AlertCircle, Tent, Coins, Filter, Clock, Flame, Percent, Link, Box, TrendingUp, TrendingDown, Activity, BarChart2, Settings, Download, UploadCloud, Cloud, CloudOff, Database, Globe, HelpCircle, Menu, Tag, Gift, EyeOff, PlusCircle, Trash, Info, RefreshCcw, Unplug, Leaf, Wrench, Users, Heart, Minus } = LucideProxy;
 
         // --- Utils ---
         const loadScript = (src) => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) return resolve(); const script = document.createElement('script'); script.src = src; script.onload = resolve; script.onerror = reject; document.head.appendChild(script); });
@@ -69,7 +96,7 @@
             return [value, setValue];
         };
 
-        // --- Helpers: Financial Calculations (New Feature) ---
+        // --- Helpers: Financial Calculations ---
         const calculateRecipeUnitCost = (recipe, ingredients, packaging) => {
             if (!recipe) return 0;
             let totalCost = 0;
@@ -143,6 +170,287 @@
             if (total === 0) return <div className="h-full flex items-center justify-center text-gray-400">尚無營收</div>;
             let startAngle = 0;
             return (<div className="relative w-48 h-48 mx-auto"><svg viewBox="0 0 100 100" className="w-full h-full transform -rotate-90">{data.map((slice, i) => { const angle = (slice.value / total) * 360; if (angle === 360) return <circle key={i} cx="50" cy="50" r="50" fill={slice.color} />; const x1 = 50 + 50 * Math.cos(Math.PI * startAngle / 180), y1 = 50 + 50 * Math.sin(Math.PI * startAngle / 180), x2 = 50 + 50 * Math.cos(Math.PI * (startAngle + angle) / 180), y2 = 50 + 50 * Math.sin(Math.PI * (startAngle + angle) / 180), largeArc = angle > 180 ? 1 : 0; const pathData = `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArc} 1 ${x2} ${y2} Z`; startAngle += angle; return <path key={i} d={pathData} fill={slice.color} stroke="white" strokeWidth="1" />; })}</svg></div>);
+        };
+
+        // --- POS Manager Component ---
+        const POSManager = ({ stalls, recipes, ingredients, packaging, onSaveStall }) => {
+            const [selectedStallId, setSelectedStallId] = useState('');
+            const [cart, setCart] = useState([]);
+            const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+            const [cashReceivedStr, setCashReceivedStr] = useState('');
+
+            const activeStalls = (stalls || []).filter(s => s && s.status !== 'completed');
+            const activeStall = activeStalls.find(s => s.id === selectedStallId);
+
+            useEffect(() => {
+                if (activeStalls.length === 1 && !selectedStallId) {
+                    setSelectedStallId(activeStalls[0].id);
+                }
+            }, [activeStalls, selectedStallId]);
+
+            const addToCart = (prod, recipe) => {
+                setCart(prev => {
+                    const existing = prev.find(item => item.recipeId === prod.recipeId);
+                    if (existing) {
+                        return prev.map(item => item.recipeId === prod.recipeId ? { ...item, qty: item.qty + 1 } : item);
+                    }
+                    return [...prev, { recipeId: prod.recipeId, name: recipe.name, price: prod.price, qty: 1 }];
+                });
+            };
+
+            const updateQty = (recipeId, delta) => {
+                setCart(prev => prev.map(item => {
+                    if (item.recipeId === recipeId) {
+                        return { ...item, qty: item.qty + delta };
+                    }
+                    return item;
+                }).filter(item => item.qty > 0));
+            };
+
+            const clearCart = () => setCart([]);
+
+            const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + (item.price * item.qty), 0), [cart]);
+
+            const changeAmount = useMemo(() => {
+                const received = parseInt(cashReceivedStr || 0, 10);
+                return received - cartTotal;
+            }, [cashReceivedStr, cartTotal]);
+
+            const appendCash = (val) => {
+                if (cashReceivedStr.length > 6) return;
+                if (val === '00' && cashReceivedStr === '') return;
+                setCashReceivedStr(prev => prev + val);
+            };
+            const setCash = (val) => setCashReceivedStr(val.toString());
+
+            // Cost Calculation Helper for Dynamic Sync
+            const getDetailedCost = (recipeId) => {
+                const r = recipes.find(rc => rc.id === recipeId);
+                if (!r) return { totalPerPortion: 0 };
+                
+                let ingCostBatch = 0;
+                let pkgCostBatch = 0;
+                
+                (r.items || []).forEach(item => {
+                    const ing = ingredients.find(i => i.id === item.id) || ingredients.find(i => i.name === item.name);
+                    if (ing) { ingCostBatch += (ing.cost || 0) * item.qty; }
+                });
+
+                (r.packagingItems || []).forEach(item => {
+                    const pkg = packaging.find(p => p.id === item.id) || packaging.find(p => p.name === item.name);
+                    if (pkg) { pkgCostBatch += (pkg.cost || 0) * item.qty; }
+                });
+
+                const yieldCount = parseFloat(r.yieldCount) || 1;
+                return { totalPerPortion: (ingCostBatch + pkgCostBatch) / yieldCount };
+            };
+
+            const completeOrder = () => {
+                if (changeAmount < 0) return;
+
+                const updatedStall = { ...activeStall };
+                const updatedProducts = [...(updatedStall.products || [])];
+
+                // Update sold quantities
+                cart.forEach(cartItem => {
+                    const pIdx = updatedProducts.findIndex(p => p.recipeId === cartItem.recipeId);
+                    if (pIdx > -1) {
+                        updatedProducts[pIdx] = {
+                            ...updatedProducts[pIdx],
+                            soldQty: (parseFloat(updatedProducts[pIdx].soldQty) || 0) + cartItem.qty
+                        };
+                    }
+                });
+
+                updatedStall.products = updatedProducts;
+                
+                // Recalculate full stall revenue & cost
+                let estRevenue = 0;
+                let estTotalCost = 0; 
+                (updatedProducts || []).forEach(p => {
+                    const rowRevenue = ((p.soldQty || 0) * (p.price || 0)) - (p.discount || 0);
+                    estRevenue += rowRevenue;
+
+                    const breakdown = getDetailedCost(p.recipeId);
+                    const totalQty = (p.soldQty || 0) + (p.wasteQty || 0) + (p.tastingQty || 0);
+                    estTotalCost += totalQty * breakdown.totalPerPortion;
+                });
+
+                (updatedStall.gifts || []).forEach(g => {
+                     const breakdown = getDetailedCost(g.recipeId);
+                     estTotalCost += (g.qty || 0) * breakdown.totalPerPortion;
+                });
+
+                const fixedFee = (parseFloat(updatedStall.boothFee) || 0) + (parseFloat(updatedStall.miscFee) || 0);
+                estTotalCost += fixedFee;
+
+                updatedStall.totalRevenue = estRevenue;
+                updatedStall.totalCost = estTotalCost;
+
+                onSaveStall(updatedStall, updatedStall.id);
+
+                alert(`結帳成功！\n找零：$${changeAmount}`);
+                clearCart();
+                setShowCheckoutModal(false);
+                setCashReceivedStr('');
+            };
+
+            return (
+                <div className="flex flex-col h-full bg-gray-50 rounded-xl overflow-hidden shadow-sm border border-gray-200">
+                    <div className="flex flex-col md:flex-row justify-between items-center bg-white p-4 shadow-sm border-b border-gray-200 z-10 shrink-0 gap-3">
+                        <h2 className="text-xl font-bold text-gray-800 flex items-center"><Calculator className="mr-2 text-indigo-600"/> 現場收銀 (POS)</h2>
+                        <select 
+                            className="w-full md:w-auto border border-indigo-200 p-2 rounded-lg font-bold bg-indigo-50 text-indigo-700 outline-none focus:ring-2 focus:ring-indigo-500" 
+                            value={selectedStallId} 
+                            onChange={e => setSelectedStallId(e.target.value)}
+                        >
+                            <option value="">-- 選擇正在營業的擺攤活動 --</option>
+                            {activeStalls.map(s => <option key={s.id} value={s.id}>{s.name} ({s.location})</option>)}
+                        </select>
+                    </div>
+
+                    {!activeStall ? (
+                        <div className="flex-1 flex flex-col items-center justify-center text-gray-400 h-full p-8 text-center">
+                            <Store size={64} className="mb-4 text-gray-300" />
+                            <p className="font-bold text-lg text-gray-500">請從上方選擇一個「進行中」的擺攤活動</p>
+                            <p className="text-sm mt-2">若無選項，請先至「擺攤管理」新增並設定欲販售的商品。</p>
+                        </div>
+                    ) : (
+                        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+                            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                                {(!activeStall.products || activeStall.products.length === 0) ? (
+                                    <div className="text-center py-10">
+                                        <Package size={48} className="mx-auto text-gray-300 mb-3" />
+                                        <p className="text-gray-500">此擺攤尚未設定販售商品</p>
+                                        <p className="text-xs text-gray-400 mt-1">請至擺攤管理編輯並加入商品</p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                                        {activeStall.products.map((p, idx) => {
+                                            const r = (recipes||[]).find(rec => rec.id === p.recipeId);
+                                            if (!r) return null;
+                                            return (
+                                                <button 
+                                                    key={idx} 
+                                                    onClick={() => addToCart(p, r)} 
+                                                    className="product-btn bg-white border-2 border-transparent hover:border-indigo-200 rounded-2xl p-4 flex flex-col items-center justify-center shadow-sm hover:shadow-md active:bg-indigo-50 min-h-[110px]"
+                                                >
+                                                    <span className="font-bold text-gray-800 text-base leading-tight mb-2 text-center line-clamp-2">{r.name}</span>
+                                                    <span className="text-indigo-600 font-black text-lg">${p.price}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="w-full lg:w-96 flex flex-col bg-white shadow-[-4px_0_15px_rgba(0,0,0,0.05)] border-t lg:border-t-0 lg:border-l border-gray-200 shrink-0 h-1/2 lg:h-full z-10">
+                                <div className="bg-gray-50 p-3 border-b border-gray-200 font-bold text-gray-700 flex justify-between items-center shrink-0">
+                                    <span>購物車清單</span>
+                                    {cart.length > 0 && <span className="bg-indigo-600 text-white text-xs px-2 py-1 rounded-full">{cart.reduce((s,i)=>s+i.qty,0)} 件</span>}
+                                </div>
+                                
+                                <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+                                    {cart.length === 0 && <div className="text-center text-gray-400 py-10 text-sm">點擊左側商品加入清單</div>}
+                                    {cart.map(item => (
+                                        <div key={item.recipeId} className="flex justify-between items-center p-2 bg-white border border-gray-100 rounded-lg shadow-sm">
+                                            <div className="flex-1 min-w-0 pr-2">
+                                                <div className="font-bold text-gray-800 text-sm truncate">{item.name}</div>
+                                                <div className="text-xs text-gray-500">${item.price}</div>
+                                            </div>
+                                            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 shrink-0">
+                                                <button onClick={() => updateQty(item.recipeId, -1)} className="w-7 h-7 flex items-center justify-center bg-white rounded shadow-sm text-gray-600 hover:text-red-500"><Minus size={14}/></button>
+                                                <span className="w-6 text-center font-bold text-sm">{item.qty}</span>
+                                                <button onClick={() => updateQty(item.recipeId, 1)} className="w-7 h-7 flex items-center justify-center bg-white rounded shadow-sm text-gray-600 hover:text-indigo-500"><Plus size={14}/></button>
+                                            </div>
+                                            <div className="w-16 text-right font-black text-indigo-600 shrink-0">
+                                                ${item.price * item.qty}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="p-4 bg-gray-50 border-t border-gray-200 shrink-0">
+                                    <div className="flex justify-between items-end mb-4">
+                                        <span className="text-gray-600 font-bold">應收總計</span>
+                                        <span className="text-3xl font-black text-indigo-600">${cartTotal}</span>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={clearCart} className="px-4 py-3 rounded-xl bg-white border border-gray-300 text-gray-600 font-bold w-1/3 hover:bg-gray-100 transition shadow-sm">
+                                            清空
+                                        </button>
+                                        <button 
+                                            onClick={() => { setCashReceivedStr(''); setShowCheckoutModal(true); }} 
+                                            disabled={cart.length === 0} 
+                                            className={`flex-1 py-3 rounded-xl font-black text-white text-lg transition shadow-md flex items-center justify-center gap-2 ${cart.length === 0 ? 'bg-gray-300 shadow-none' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95'}`}
+                                        >
+                                            結帳收款 <ArrowLeft className="rotate-180" size={20}/>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showCheckoutModal && (
+                        <div className="fixed inset-0 z-[60] flex flex-col bg-gray-100/90 backdrop-blur-sm animate-fade-in p-4 sm:p-6 justify-end sm:justify-center items-center">
+                            <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+                                <header className="bg-gray-50 border-b border-gray-200 px-4 py-4 flex justify-between items-center">
+                                    <h2 className="text-lg font-black text-gray-800">結帳找零計算</h2>
+                                    <button onClick={() => setShowCheckoutModal(false)} className="text-gray-400 hover:text-gray-700 bg-white rounded-full p-1 border shadow-sm">
+                                        <X size={20}/>
+                                    </button>
+                                </header>
+
+                                <div className="p-5 flex flex-col gap-4">
+                                    <div className="bg-white rounded-2xl p-4 shadow-inner border border-gray-100 bg-gray-50">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-gray-500 font-bold text-sm">應收總計</span>
+                                            <span className="text-xl font-black text-gray-800">${cartTotal}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center mb-3">
+                                            <span className="text-gray-500 font-bold text-sm">實收金額</span>
+                                            <span className="text-3xl font-black text-indigo-600 border-b-2 border-indigo-200 min-w-[120px] text-right pb-1">
+                                                {cashReceivedStr || '0'}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between items-center pt-3 border-t border-dashed border-gray-300">
+                                            <span className={`text-sm font-bold ${changeAmount >= 0 ? 'text-green-600' : 'text-red-500'}`}>找零</span>
+                                            <span className={`text-4xl font-black ${changeAmount >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                                ${changeAmount >= 0 ? changeAmount : 0}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-4 gap-2">
+                                        <button onClick={() => setCash(cartTotal)} className="bg-indigo-50 text-indigo-700 font-bold py-2 rounded-xl text-sm border border-indigo-100 hover:bg-indigo-100">剛好</button>
+                                        <button onClick={() => setCash(100)} className="bg-gray-50 text-gray-700 font-bold py-2 rounded-xl text-sm border border-gray-200 hover:bg-gray-100">$100</button>
+                                        <button onClick={() => setCash(500)} className="bg-gray-50 text-gray-700 font-bold py-2 rounded-xl text-sm border border-gray-200 hover:bg-gray-100">$500</button>
+                                        <button onClick={() => setCash(1000)} className="bg-gray-50 text-gray-700 font-bold py-2 rounded-xl text-sm border border-gray-200 hover:bg-gray-100">$1000</button>
+                                    </div>
+
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {['1','2','3','4','5','6','7','8','9'].map(num => (
+                                            <button key={num} onClick={() => appendCash(num)} className="numpad-btn">{num}</button>
+                                        ))}
+                                        <button onClick={() => setCashReceivedStr('')} className="numpad-btn text-red-500 bg-red-50">C</button>
+                                        <button onClick={() => appendCash('0')} className="numpad-btn">0</button>
+                                        <button onClick={() => appendCash('00')} className="numpad-btn">00</button>
+                                    </div>
+
+                                    <button 
+                                        onClick={completeOrder} 
+                                        disabled={changeAmount < 0} 
+                                        className={`w-full py-4 mt-2 rounded-xl font-black text-white text-lg shadow-lg transition-all flex items-center justify-center ${changeAmount < 0 ? 'bg-gray-300 shadow-none' : 'bg-green-500 hover:bg-green-600 active:scale-95'}`}
+                                    >
+                                        <CheckCircle className="mr-2"/> 確認完成結帳
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
         };
 
         // --- DataManager ---
@@ -325,7 +633,6 @@
                 let form = JSON.parse(JSON.stringify(recipe));
                 if (form.markupPercent === undefined) form.markupPercent = 0;
                 if (form.extraFee === undefined) form.extraFee = 50;
-                // 嘗試修復連結 (如果名稱對得上)
                 form.items = form.items.map(item => {
                     let exists = (ingredients||[]).find(i => i.id === item.id);
                     if (!exists && item.name) {
@@ -565,7 +872,6 @@
                         <div className="flex space-x-2">
                              <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls" className="hidden" />
                              <button onClick={handleImportClick} className="bg-green-600 text-white px-4 py-2 rounded shadow flex items-center hover:bg-green-700 text-sm"><Upload size={16} className="mr-1" /> 匯入 Excel</button>
-                             {/* 🔥 V140: 新增清空按鈕 */}
                              {recipes.length > 0 && <button onClick={confirmClearAll} className="bg-red-500 text-white px-3 py-2 rounded shadow flex items-center hover:bg-red-600 text-sm"><Trash2 size={16} className="mr-1" /> 清空</button>}
                              <button onClick={startNew} className="bg-indigo-600 text-white px-4 py-2 rounded shadow flex items-center hover:bg-indigo-700 text-sm"><Plus size={16} className="mr-1" /> 新增</button>
                         </div>
@@ -574,7 +880,6 @@
                         {(recipes||[]).map(recipe => {
                             const cost = calculateCost(recipe);
                             const profit = recipe.sellingPrice - cost;
-                            // 🔥 V140: 檢查連結健康度
                             const isBroken = checkRecipeHealth(recipe);
 
                             return (
@@ -582,7 +887,6 @@
                                     <div>
                                         <div className="flex justify-between items-start mb-2">
                                             <h3 className="font-bold text-lg text-gray-800 flex items-center">
-                                                {/* 🔥 V140: 若有問題顯示紅驚嘆號 */}
                                                 {isBroken && <AlertCircle size={18} className="text-red-500 mr-1 animate-pulse" title="連結失效：請檢查食材或包材是否在庫存中"/>}
                                                 {recipe.name}
                                             </h3>
@@ -609,10 +913,9 @@
             );
         };
 
-      // --- OrderManager (V137 - CRM Sort by Frequency) ---
-        // 修改：客戶分析 (CRM) 改為預設依照「訂購次數」由高到低排序 (次數相同則比金額)
+        // --- OrderManager ---
         const OrderManager = ({ orders, recipes, ingredients, packaging, onSave, onDelete, onUpdateStatus }) => {
-            const [activeView, setActiveView] = useState('list'); // 'list' | 'crm'
+            const [activeView, setActiveView] = useState('list'); 
             const [isCreating, setIsCreating] = useState(false);
             const [newOrder, setNewOrder] = useState({ customer: '', store: '', shippingFee: 0, packagingFee: 0, items: [], note: '' });
             const [searchTerm, setSearchTerm] = useState('');
@@ -643,7 +946,6 @@
                 });
             }, [safeOrders, searchTerm]);
 
-            // 🔥 V137 優化：CRM 排序邏輯調整
             const customerAnalysis = useMemo(() => {
                 const customers = {};
                 safeOrders.forEach(order => {
@@ -697,7 +999,6 @@
 
                     return { ...c, avgOrderValue: c.orderCount > 0 ? Math.round(c.totalSpend / c.orderCount) : 0, topProducts, tag, tagColorClass };
                 })
-                // 🔥 V137 修改排序：先比次數(大到小)，次數一樣比總金額(大到小)
                 .sort((a, b) => {
                     if (b.orderCount !== a.orderCount) {
                         return b.orderCount - a.orderCount;
@@ -882,7 +1183,6 @@
                         <div className="grid grid-cols-1 gap-4">
                             {filteredOrders.length === 0 && <p className="text-center text-gray-400 py-10">{searchTerm ? '找不到符合的訂單' : '尚無訂單'}</p>}
                             {filteredOrders.map(order => {
-                                // Calculate financial data for this order
                                 const { cost, profit } = calculateOrderFinancials(order, recipes, ingredients, packaging);
                                 const profitMargin = order.totalAmount > 0 ? (profit / order.totalAmount) * 100 : 0;
 
@@ -909,7 +1209,6 @@
                                         <div className="text-xs text-gray-400">總金額</div>
                                         <div className="font-bold text-indigo-600 text-2xl">${order.totalAmount ? order.totalAmount.toLocaleString() : 0}</div>
                                         
-                                        {/* New Cost/Profit Display */}
                                         <div className="text-xs text-right w-full mb-2 bg-slate-50 p-2 rounded">
                                             <div className="text-gray-400 mb-1">成本: ${Math.round(cost).toLocaleString()}</div>
                                             <div className={profit >= 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}>
@@ -919,8 +1218,8 @@
 
                                         {order.status === 'pending' && (
                                             <div className="w-full space-y-2 mb-2">
-                                                <button onClick={() => onUpdateStatus(order, 'completed')} className="w-full bg-green-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm text-sm hover:bg-green-700 w-full justify-center"><CheckCircle size={16} className="mr-1" /> 完成並扣庫存</button>
-                                                <button onClick={() => handleForceComplete(order)} className="w-full bg-gray-100 text-gray-600 px-4 py-2 rounded-lg flex items-center shadow-sm text-xs hover:bg-gray-200 w-full justify-center border border-gray-200"><FileText size={14} className="mr-1" /> 補登 (不扣庫存)</button>
+                                                <button onClick={() => onUpdateStatus(order, 'completed')} className="w-full bg-green-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm text-sm hover:bg-green-700 justify-center"><CheckCircle size={16} className="mr-1" /> 完成並扣庫存</button>
+                                                <button onClick={() => handleForceComplete(order)} className="w-full bg-gray-100 text-gray-600 px-4 py-2 rounded-lg flex items-center shadow-sm text-xs hover:bg-gray-200 justify-center border border-gray-200"><FileText size={14} className="mr-1" /> 補登 (不扣庫存)</button>
                                             </div>
                                         )}
                                         <div className="flex space-x-2 w-full">
@@ -954,7 +1253,7 @@
             );
         };
 
-        // --- StallManager (V144 - Edit Mode Fix) ---
+        // --- StallManager ---
         const StallManager = ({ stalls, recipes, ingredients, packaging, onSave, onDelete, onDeductStock }) => {
             const [editingId, setEditingId] = useState(null);
             const [stallForm, setStallForm] = useState({ name: '', location: '', startDate: '', endDate: '', boothFee: 0, miscFee: 0, products: [], gifts: [], status: 'pending' });
@@ -1278,7 +1577,7 @@
             );
         };
 
-        // --- InventoryTable (V139 - Clear All Button Added) ---
+        // --- InventoryTable ---
         const InventoryTable = ({ type, data, onSave, onDelete, onClearAll }) => {
             const [editingId, setEditingId] = useState(null);
             const [editForm, setEditForm] = useState({ name: '', unit: 'g', packPrice: 0, packSize: 0, packCount: 0, yieldRate: 100, cost: 0, stock: 0, lowStockThreshold: 0, supplier: '', purchaseDate: '', nutrition: {} });
@@ -1331,9 +1630,7 @@
             );
         };
 
-        // --- App (V146 - Zombie Data Killer) ---
-        // 1. 強制 ID 修復：確保每一筆資料都有獨一無二的 ID，解決「刪一個死全部」的問題。
-        // 2. 同步邏輯優化：確保雲端與本地資料一致。
+        // --- App ---
         const App = () => {
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -1344,7 +1641,6 @@
             const [stalls, setStalls] = useStickyState([], 'baking_stalls_v3');
             const [firebaseStatus, setFirebaseStatus] = useState('disconnected');
 
-            // 🔥 V146: 強力 ID 修復與去重 (當資料載入時執行)
             useEffect(() => {
                 const repairAndDedupe = (data, setter, name) => {
                     if (!Array.isArray(data)) return;
@@ -1352,8 +1648,6 @@
                     const seenIds = new Set();
                     
                     const fixedData = data.map(item => {
-                        // 1. 如果沒有 ID，配發一個
-                        // 2. 如果 ID 重複，配發新的
                         let currentId = item.id;
                         if (!currentId || seenIds.has(currentId)) {
                             hasChanges = true;
@@ -1397,10 +1691,8 @@
                         
                         collections.forEach(({ name, setter }) => {
                             const unsub = db.collection(name).onSnapshot(snapshot => {
-                                // V146: 只要雲端有變動，就同步下來 (除非雲端被意外清空)
                                 if (!snapshot.empty) {
                                     const remoteData = snapshot.docs.map(doc => doc.data());
-                                    // 簡單比對長度，避免無限迴圈
                                     setter(remoteData);
                                 }
                             }, error => {
@@ -1423,7 +1715,6 @@
             const handleSave = async (col, data, id) => { 
                 const map = { 'recipes': setRecipes, 'ingredients': setIngredients, 'packaging': setPackaging, 'orders': setOrders, 'stalls': setStalls }; 
                 const setter = map[col]; 
-                // 確保 ID 存在
                 const newId = id || `doc_${Date.now()}_${Math.random().toString(36).substr(2,5)}`; 
                 const finalData = { ...data, id: newId };
 
@@ -1443,10 +1734,8 @@
                 if (!confirm('確定刪除？此操作無法復原。')) return; 
                 const map = { 'recipes': setRecipes, 'ingredients': setIngredients, 'packaging': setPackaging, 'orders': setOrders, 'stalls': setStalls }; 
                 
-                // 1. 本地刪除
                 map[col](prev => (Array.isArray(prev) ? prev : []).filter(i => String(i.id) !== String(id))); 
                 
-                // 2. 雲端刪除
                 if (firebaseStatus === 'connected') {
                     try { await firebase.firestore().collection(col).doc(id).delete(); } 
                     catch (e) { console.error("雲端刪除失敗", e); }
@@ -1541,7 +1830,19 @@
                 alert('擺攤庫存 (含耗損、試吃、贈品) 已扣除！'); 
             };
 
-            const navItems = [ { id: 'dashboard', label: '儀表板', icon: LayoutDashboard }, { id: 'report', label: '銷售報表', icon: BarChart2 }, { id: 'orders', label: '訂單管理', icon: ClipboardList }, { id: 'stalls', label: '擺攤管理', icon: Tent }, { id: 'recipes', label: '食譜管理', icon: ChefHat }, { id: 'ingredients', label: '食材庫存', icon: Utensils }, { id: 'packaging', label: '包材管理', icon: Package }, { id: 'settings', label: '系統設定', icon: Settings }, ];
+            // 🔥 新增 POS 收銀至選單
+            const navItems = [ 
+                { id: 'dashboard', label: '儀表板', icon: LayoutDashboard }, 
+                { id: 'pos', label: 'POS 收銀', icon: Calculator }, 
+                { id: 'report', label: '銷售報表', icon: BarChart2 }, 
+                { id: 'orders', label: '訂單管理', icon: ClipboardList }, 
+                { id: 'stalls', label: '擺攤管理', icon: Tent }, 
+                { id: 'recipes', label: '食譜管理', icon: ChefHat }, 
+                { id: 'ingredients', label: '食材庫存', icon: Utensils }, 
+                { id: 'packaging', label: '包材管理', icon: Package }, 
+                { id: 'settings', label: '系統設定', icon: Settings }, 
+            ];
+            
             const handleNavClick = (id) => { setActiveTab(id); setIsMobileMenuOpen(false); };
 
             return (
@@ -1564,7 +1865,7 @@
                     
                     <main className="flex-1 flex flex-col overflow-hidden relative w-full">
                         {/* 手機版頂部導覽列 */}
-                        <div className="md:hidden bg-white p-4 shadow-sm border-b flex justify-between items-center z-10 sticky top-0">
+                        <div className="md:hidden bg-white p-4 shadow-sm border-b flex justify-between items-center z-10 sticky top-0 shrink-0">
                             <h1 className="font-bold text-lg text-indigo-600 flex items-center"><ChefHat size={20} className="mr-2"/> 烘焙大師 Pro</h1>
                             <button 
                                 onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} 
@@ -1577,6 +1878,10 @@
 
                         <div className="flex-1 overflow-auto p-4 md:p-8">
                             {activeTab === 'dashboard' && <Dashboard recipes={recipes} ingredients={ingredients} packaging={packaging} orders={orders} stalls={stalls} />}
+                            
+                            {/* 🔥 新增 POS Component 渲染，並傳入 recipes, ingredients, packaging 以便計算成本 */}
+                            {activeTab === 'pos' && <POSManager stalls={stalls} recipes={recipes} ingredients={ingredients} packaging={packaging} onSaveStall={(d, id) => handleSave('stalls', d, id)} />}
+                            
                             {activeTab === 'report' && <ReportManager recipes={recipes} orders={orders} stalls={stalls} />}
                             {activeTab === 'orders' && <OrderManager orders={orders} recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('orders', d, id)} onDelete={(id) => handleDelete('orders', id)} onUpdateStatus={handleCompleteOrder} />}
                             {activeTab === 'stalls' && <StallManager stalls={stalls} recipes={recipes} ingredients={ingredients} packaging={packaging} onSave={(d, id) => handleSave('stalls', d, id)} onDelete={(id) => handleDelete('stalls', id)} onDeductStock={handleStallStockDeduct} />}
